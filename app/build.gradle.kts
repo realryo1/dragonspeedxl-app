@@ -36,6 +36,12 @@ android {
         release {
             isMinifyEnabled = false
         }
+        // 別アプリとして入れる試験用（applicationId が別なので、本体のデータ・モデルには触れない）。installDltest で入れる。
+        create("dltest") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".dltest"
+            resValue("string", "app_name", "dragonspeedXL テスト")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

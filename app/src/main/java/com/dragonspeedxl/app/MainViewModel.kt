@@ -12,6 +12,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.dragonspeedxl.app.data.HistoryItem
 import com.dragonspeedxl.app.data.HistoryStore
+import com.dragonspeedxl.app.download.DownloadService
+import com.dragonspeedxl.app.download.DownloadStatus
+import com.dragonspeedxl.app.download.ModelDownloader
+import com.dragonspeedxl.app.download.ModelManifest
 import com.dragonspeedxl.app.engine.DeviceMetrics
 import com.dragonspeedxl.app.engine.GenerationEngine
 import com.dragonspeedxl.app.engine.GenerationRequest
@@ -56,6 +60,9 @@ const val DEFAULT_IMAGE_BLACKLIST =
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val store = HistoryStore(app)
     private val native = NativeEngine(app)
+    private val downloader = ModelDownloader(native.modelDir)
+    /** APK に同梱した、モデルの一覧（サイズと sha256）。足りないファイルを調べるのと、取るのに使う。 */
+    private val modelManifest = ModelManifest.parse(app.assets.open(ModelManifest.ASSET).bufferedReader().use { it.readText() })
     private val prefs = app.getSharedPreferences("ui", Context.MODE_PRIVATE)
 
     // ---- 入力（空欄 = 既定値。placeholder に既定値を出す）----
@@ -225,6 +232,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var nativeStatus by mutableStateOf(native.statusText())
         private set
     private var modelsTick by mutableStateOf(0)   // モデルの配置を調べ直す合図
+
+    // ---- モデルのダウンロード（初回は、足りないモデルを取るまで本体の画面を出さない）----
+    /** 足りないモデルがあるか（同梱の manifest と端末の中身で決める）。true の間は、案内画面を出す。 */
+    var modelsNeedDownload by mutableStateOf(computeNeedDownload())
+        private set
+    var downloadProgress by mutableStateOf<ModelDownloader.Progress?>(null)
+        private set
+    /** 取得の完了・失敗のメッセージ。 */
+    var downloadMessage by mutableStateOf<String?>(null)
+        private set
+    var downloadFailed by mutableStateOf(false)
+        private set
+    private var downloadJob: Job? = null
+    val downloading: Boolean get() = downloadJob?.isActive == true
 
     /** Hires が使えるか（UNet の共有 bin に、縦横のタイル用グラフも入っている） */
     val hiresAvailable: Boolean get() { modelsTick; return native.hasUnet() }
@@ -533,6 +554,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         loraImportFailed = false
         loraImportProgress = 0f
         loraImportMessage = "開始"
+        DownloadStatus.update(LORA_TITLE, "準備中", 0f)   // 通知に出す（アプリを閉じても、取り込みは続く）
+        DownloadService.start(getApplication())
         viewModelScope.launch {
             try {
                 val outcome = withContext(Dispatchers.IO) {
@@ -543,17 +566,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         assets.open("super_4g_windows.json").bufferedReader().use { it.readText() },
                         assets.open("clip_layout.json").bufferedReader().use { it.readText() },
                     )
-                    run(converter, File(getApplication<Application>().cacheDir, "lora_download")) { msg, f -> loraImportMessage = msg; loraImportProgress = f }
+                    run(converter, File(getApplication<Application>().cacheDir, "lora_download")) { msg, f ->
+                        loraImportMessage = msg
+                        loraImportProgress = f
+                        DownloadStatus.update(LORA_TITLE, msg, f)
+                    }
                 }
                 refreshLoras()
                 loraImportProgress = 1f
                 loraImportMessage = "「${outcome.name}」を追加しました（はみ出し ${"%.4f".format(outcome.result.overRatio * 100)}%）。" +
                     if (outcome.activation.isEmpty()) "" else "\nactivation text: ${outcome.activation}"
+                DownloadStatus.finish(LORA_TITLE, "「${outcome.name}」を追加しました", failed = false)
             } catch (e: CancellationException) {
+                DownloadStatus.finish(LORA_TITLE, "中断しました", failed = true)
                 throw e
             } catch (e: Exception) {
                 loraImportFailed = true
                 loraImportMessage = e.message ?: e.toString()
+                DownloadStatus.finish(LORA_TITLE, "失敗しました。アプリを開いて確かめてください", failed = true)
             } finally {
                 loraImporting = false
             }
@@ -706,6 +736,43 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshNativeStatus() {
         nativeStatus = native.statusText()
         modelsTick++
+        modelsNeedDownload = computeNeedDownload()
+    }
+
+    private fun computeNeedDownload(): Boolean = downloader.missing(modelManifest).isNotEmpty()
+
+    /** 足りないモデルを取る。途中で止まっても（アプリを閉じても）次回は続きから。取り終えると、本体の画面に切り替わる。 */
+    fun startModelDownload() {
+        if (downloading || !modelIdle) return
+        downloadMessage = null
+        downloadFailed = false
+        downloadProgress = null
+        DownloadStatus.update(MODEL_TITLE, "準備中", 0f)   // 通知に出す（アプリを閉じても、取得は続く）
+        DownloadService.start(getApplication())
+        downloadJob = viewModelScope.launch {
+            try {
+                downloader.download(modelManifest) { p ->
+                    downloadProgress = p
+                    val fraction = if (p.totalBytes > 0) p.doneBytes.toFloat() / p.totalBytes else 0f
+                    DownloadStatus.update(
+                        MODEL_TITLE,
+                        "${p.fileIndex + 1} / ${p.fileCount}  ${ModelDownloader.gb(p.doneBytes)} / ${ModelDownloader.gb(p.totalBytes)} GB",
+                        fraction,
+                    )
+                }
+                downloadMessage = "取得が終わりました。"
+                DownloadStatus.finish(MODEL_TITLE, "完了しました。アプリでモデルを読み込めます", failed = false)
+            } catch (e: CancellationException) {
+                DownloadStatus.finish(MODEL_TITLE, "中断しました（次回は続きから）", failed = true)
+                throw e
+            } catch (e: Exception) {
+                downloadFailed = true
+                downloadMessage = "取得に失敗しました: ${e.message ?: e.javaClass.simpleName}（通信を確かめて、もう一度押してください）"
+                DownloadStatus.finish(MODEL_TITLE, "失敗しました。アプリを開いて、もう一度押してください", failed = true)
+            } finally {
+                refreshNativeStatus()
+            }
+        }
     }
 
     /** 生成。hires steps が 0（または Hires 用モデルなし）なら Base のみ。 */
@@ -925,6 +992,72 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (uri != null) doneNote = "ギャラリーに保存しました（Pictures/dragonspeedXL）"
     }
 
+    /**
+     * 書き出した zip を読み込んで、履歴に足す。同じ id の項目は飛ばす。裏で進み、通知に出す。
+     * 読み込めたら、履歴の一覧を読み直す（追加された分が出る）。
+     */
+    fun importHistory(uri: Uri) {
+        DownloadStatus.update(IMPORT_TITLE, "準備中", 0f)
+        DownloadService.start(getApplication())
+        viewModelScope.launch {
+            try {
+                val r = withContext(Dispatchers.IO) {
+                    store.importZip({ getApplication<Application>().contentResolver.openInputStream(uri) ?: error("読み込み元を開けない") }) { done, total ->
+                        DownloadStatus.update(IMPORT_TITLE, "$done / $total 枚", done.toFloat() / total)
+                    }
+                }
+                history = store.load()
+                historyPage = historyPage.coerceIn(1, historyPageCount)
+                doneNote = "履歴を読み込みました（追加 ${r.added} 件、同じ id で飛ばした ${r.skipped} 件、画像なし ${r.noImage} 件）"
+                DownloadStatus.finish(IMPORT_TITLE, "${r.added} 件を追加しました", failed = false)
+            } catch (e: CancellationException) {
+                DownloadStatus.finish(IMPORT_TITLE, "中断しました", failed = true)
+                throw e
+            } catch (e: Exception) {
+                error = "読み込みに失敗: ${e.message ?: e.javaClass.simpleName}"
+                DownloadStatus.finish(IMPORT_TITLE, "読み込みに失敗しました（zip の形式を確かめて）", failed = true)
+            }
+        }
+    }
+
+    /** 書き出しのファイル名（dragonspeedXL-history-yyyyMMdd-HHmm.zip）。 */
+    fun historyExportName(): String =
+        "dragonspeedXL-history-" + java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.JAPAN).format(java.util.Date()) + ".zip"
+
+    /**
+     * 履歴を zip に書き出す（画像と index.json）。書き出し先は、ユーザーが選んだ場所（uri）。
+     * 裏で進み、通知に進み具合を出す（アプリを閉じても続く）。
+     */
+    fun exportHistory(uri: Uri) {
+        val items = history.toList()
+        if (items.isEmpty()) {
+            error = "書き出す履歴がありません"
+            return
+        }
+        DownloadStatus.update(EXPORT_TITLE, "準備中", 0f)
+        DownloadService.start(getApplication())
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val out = getApplication<Application>().contentResolver.openOutputStream(uri) ?: error("書き出し先を開けない")
+                    out.use { o ->
+                        store.exportZip(o, items) { done, total ->
+                            DownloadStatus.update(EXPORT_TITLE, "$done / $total 枚", done.toFloat() / total)
+                        }
+                    }
+                }
+                doneNote = "履歴を書き出しました（${items.size} 件）"
+                DownloadStatus.finish(EXPORT_TITLE, "${items.size} 件を書き出しました", failed = false)
+            } catch (e: CancellationException) {
+                DownloadStatus.finish(EXPORT_TITLE, "中断しました", failed = true)
+                throw e
+            } catch (e: Exception) {
+                error = "書き出しに失敗: ${e.message ?: e.javaClass.simpleName}"
+                DownloadStatus.finish(EXPORT_TITLE, "書き出しに失敗しました", failed = true)
+            }
+        }
+    }
+
     override fun onCleared() {
         root.stop()
         native.release()
@@ -932,6 +1065,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         const val DEFAULT_PROMPT = "hatsune miku"
+
+        // 裏の取得（通知の見出し）
+        private const val MODEL_TITLE = "モデルをダウンロード中"
+        private const val LORA_TITLE = "LoRA を取り込み中"
+        private const val EXPORT_TITLE = "履歴を書き出し中"
+        private const val IMPORT_TITLE = "履歴を読み込み中"
 
         // ネイティブ（pipeline.h の ModelBit）の常駐モデルの状態のビット
         private const val BIT_CLIP_L = 1 shl 0

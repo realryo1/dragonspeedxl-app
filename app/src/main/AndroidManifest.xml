@@ -3,6 +3,10 @@
 
     <!-- Danbooru のタグ補完（プロンプトチップ）だけに使う。生成そのものは端末内で完結する -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 取得の進み具合を通知に出す（前景サービス。アプリを閉じても、取得が続く） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:allowBackup="false"
@@ -15,6 +19,10 @@
         <uses-native-library android:name="libadsprpc.so" android:required="false" />
         <!-- GPU（QNN GPU バックエンド）で VAE を分担するのに必要 -->
         <uses-native-library android:name="libOpenCL.so" android:required="false" />
+        <service
+            android:name=".download.DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -33,7 +41,7 @@
         <!-- アプリのフォルダを「ファイル」アプリのサイドバーに出す（モデルの出し入れ・履歴画像の取り出し用） -->
         <provider
             android:name=".files.AppFilesProvider"
-            android:authorities="com.dragonspeedxl.app.documents"
+            android:authorities="${applicationId}.documents"
             android:exported="true"
             android:grantUriPermissions="true"
             android:permission="android.permission.MANAGE_DOCUMENTS">

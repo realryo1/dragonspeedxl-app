@@ -1,0 +1,80 @@
+{
+  "repo": "realryo1/dragonspeedxl-models",
+  "files": [
+    {
+      "path": "models/clip_g.bin",
+      "size": 1400578048,
+      "sha256": "5edf4c0ffa4314d9138956fab34a400a6f42dc49c817224fc43e786ea870779e"
+    },
+    {
+      "path": "models/clip_g_lora.bin",
+      "size": 1491808256,
+      "sha256": "f0e28c4a72e0bb95de91405cb9d4a46a3319968ea729ef53ac0abf944802a5f4"
+    },
+    {
+      "path": "models/clip_l.bin",
+      "size": 234233856,
+      "sha256": "9f0b5276f6fa347aee847952c4d637db112cf43aa3b695722867b0117ade8a60"
+    },
+    {
+      "path": "models/clip_l_lora.bin",
+      "size": 254128128,
+      "sha256": "f0bfb2df0c73347d70cc52e606fab96a4c7c0ce3b5c8fe711d4d5fb4fa9ed93c"
+    },
+    {
+      "path": "models/unet_lora_4g.bin",
+      "size": 3736150016,
+      "sha256": "a3bf898f18bf5f84fd39c40a1b1ca0073508503b693258e74b096552b96bbc5e"
+    },
+    {
+      "path": "models/unet_lora_4g_default.bin",
+      "size": 196029400,
+      "sha256": "d07dc9751717486daa6b294f0f1809a70769c9526ad2d31cc1c17ea3e1ecf265"
+    },
+    {
+      "path": "models/vae_64_w8a16.bin",
+      "size": 60907520,
+      "sha256": "a3a893d872639743fb8a6fb27e94a91214155d69d07277cc8230e4ee1e3fd109"
+    },
+    {
+      "path": "models/clip_vocab.tsv",
+      "size": 763451,
+      "sha256": "7119a725498b04c3938fb15ec9bdd03a27bca8cf81ad391688c2640c71b64c93"
+    },
+    {
+      "path": "models/clip_merges.txt",
+      "size": 524619,
+      "sha256": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a"
+    },
+    {
+      "path": "models/text_projection.f32",
+      "size": 6553600,
+      "sha256": "7304be01867b07382697ad372874c6f47f0c0ebf66fbd1a29bab0a041388dbce"
+    },
+    {
+      "path": "models/gpu/taesd_135x240_fp32.dlc",
+      "size": 4977564,
+      "sha256": "858aa265ab2693e302d4f9484c710e2673465b740b0618374c27c57f7bd2d5ed"
+    },
+    {
+      "path": "models/gpu/taesd_160x90_fp32.dlc",
+      "size": 4977564,
+      "sha256": "9dcd45595e12d87f0c6e549609fbc54095604128a613530554068e7ed2187f9b"
+    },
+    {
+      "path": "models/gpu/taesd_240x135_fp32.dlc",
+      "size": 4977564,
+      "sha256": "6ca1b787975a77883ff31d34dd17de4564a90c1e02d8ab22ed3ffbf21ec03ee8"
+    },
+    {
+      "path": "models/gpu/taesd_90x160_fp32.dlc",
+      "size": 4977564,
+      "sha256": "e82d0b41e090b35b0fff1613fbc72bb163486e11b50ed7c1afb989c4e2a53377"
+    },
+    {
+      "path": "models/gpu/vae_64_fp32.dlc",
+      "size": 198140196,
+      "sha256": "2db1875508482e0149df9f05c57422a47b4b4ff52bc7e3c54ad86b086ff39781"
+    }
+  ]
+}

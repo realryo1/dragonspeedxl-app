@@ -33,7 +33,7 @@ import com.dragonspeedxl.app.MainViewModel
 import com.dragonspeedxl.app.lora.LoraConverter
 
 /** ダイアログの Context は Activity のラップなので、Activity まで辿る。 */
-private tailrec fun Context.activity(): Activity? = when (this) {
+internal tailrec fun Context.activity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.activity()
     else -> null

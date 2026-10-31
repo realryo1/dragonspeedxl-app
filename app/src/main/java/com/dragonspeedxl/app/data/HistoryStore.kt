@@ -13,6 +13,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.InputStream
+import java.io.IOException
+import java.io.OutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 data class HistoryItem(
     val id: String,
@@ -42,6 +48,9 @@ data class HistoryItem(
     val tileLabel: String get() = kind + (if (orientation == Orientation.PORTRAIT) "·縦" else "") + (if (variant.isEmpty()) "" else "·" + variant.trimStart('_'))
 }
 
+/** 履歴の取り込みの結果。added は足した件数、skipped は同じ id が既にあって飛ばした件数、noImage は画像が zip に無くて足さなかった件数。 */
+data class ImportResult(val added: Int, val skipped: Int, val noImage: Int)
+
 /** 生成履歴。画像は filesDir/history/<id>.png、メタデータは index.json（新しい順）。 */
 class HistoryStore(context: Context) {
     private val appContext = context.applicationContext
@@ -51,27 +60,30 @@ class HistoryStore(context: Context) {
 
     fun load(): List<HistoryItem> = synchronized(lock) {
         if (!index.exists()) return@synchronized emptyList()
-        runCatching {
-            val arr = JSONArray(index.readText())
-            (0 until arr.length()).map { i ->
-                val o = arr.getJSONObject(i)
-                HistoryItem(
-                    id = o.getString("id"),
-                    prompt = o.getString("prompt"),
-                    seed = o.getLong("seed"),
-                    orientation = Orientation.valueOf(o.getString("orientation")),
-                    hires = o.getBoolean("hires"),
-                    totalMillis = o.getLong("totalMillis"),
-                    createdAt = o.getLong("createdAt"),
-                    baseSteps = o.optInt("baseSteps", 2),
-                    hiresSteps = o.optInt("hiresSteps", 4),
-                    denoise = o.optDouble("denoise", 0.39),
-                    variant = o.optString("variant", ""),
-                    lora = o.optString("lora", ""),
-                    loraStrength = o.optDouble("loraStrength", 0.0).toFloat(),
-                )
-            }
-        }.getOrDefault(emptyList())
+        runCatching { parseItems(index.readText()) }.getOrDefault(emptyList())
+    }
+
+    /** index.json（一覧の JSON）を項目に読む。形が違えば例外。 */
+    private fun parseItems(text: String): List<HistoryItem> {
+        val arr = JSONArray(text)
+        return (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            HistoryItem(
+                id = o.getString("id"),
+                prompt = o.getString("prompt"),
+                seed = o.getLong("seed"),
+                orientation = Orientation.valueOf(o.getString("orientation")),
+                hires = o.getBoolean("hires"),
+                totalMillis = o.getLong("totalMillis"),
+                createdAt = o.getLong("createdAt"),
+                baseSteps = o.optInt("baseSteps", 2),
+                hiresSteps = o.optInt("hiresSteps", 4),
+                denoise = o.optDouble("denoise", 0.39),
+                variant = o.optString("variant", ""),
+                lora = o.optString("lora", ""),
+                loraStrength = o.optDouble("loraStrength", 0.0).toFloat(),
+            )
+        }
     }
 
     /** 生成開始時に決めるジョブ ID の元（作成時刻ミリ秒）。ステータス行の「Job #…」に先に出すため、add より前に払い出す。 */
@@ -137,17 +149,88 @@ class HistoryStore(context: Context) {
     private fun encodePng(bitmap: Bitmap): ByteArray = ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
 
     private fun write(items: List<HistoryItem>) {
+        index.writeText(toJson(items, imagePath = false).toString())
+    }
+
+    /** 一覧の JSON。書き出しのときは、zip の中の画像の場所（images/<id>.png）も入れる。 */
+    private fun toJson(items: List<HistoryItem>, imagePath: Boolean): JSONArray {
         val arr = JSONArray()
         items.forEach {
-            arr.put(
-                JSONObject()
-                    .put("id", it.id).put("prompt", it.prompt).put("seed", it.seed)
-                    .put("orientation", it.orientation.name).put("hires", it.hires)
-                    .put("totalMillis", it.totalMillis).put("createdAt", it.createdAt)
-                    .put("baseSteps", it.baseSteps).put("hiresSteps", it.hiresSteps).put("denoise", it.denoise).put("variant", it.variant)
-                    .put("lora", it.lora).put("loraStrength", it.loraStrength.toDouble()),
-            )
+            val o = JSONObject()
+                .put("id", it.id).put("prompt", it.prompt).put("seed", it.seed)
+                .put("orientation", it.orientation.name).put("hires", it.hires)
+                .put("totalMillis", it.totalMillis).put("createdAt", it.createdAt)
+                .put("baseSteps", it.baseSteps).put("hiresSteps", it.hiresSteps).put("denoise", it.denoise).put("variant", it.variant)
+                .put("lora", it.lora).put("loraStrength", it.loraStrength.toDouble())
+            if (imagePath && File(dir, "${it.id}.png").isFile) o.put("image", "images/${it.id}.png")
+            arr.put(o)
         }
-        index.writeText(arr.toString())
+        return arr
+    }
+
+    /**
+     * 履歴を zip に書き出す（画像と一覧）。
+     * 中身: index.json（メタデータ。新しい順）と、images/<id>.png（各画像。PNG の中に生成情報が入っている）。
+     * 画像が無い項目は、一覧には入れるが画像は入れない。onItem(済んだ枚数, 全体)。
+     */
+    fun exportZip(out: OutputStream, items: List<HistoryItem>, onItem: (Int, Int) -> Unit) {
+        ZipOutputStream(out).use { zip ->
+            zip.putNextEntry(ZipEntry("index.json"))
+            zip.write(toJson(items, imagePath = true).toString(2).toByteArray(Charsets.UTF_8))
+            zip.closeEntry()
+            items.forEachIndexed { i, it ->
+                val f = File(dir, "${it.id}.png")
+                if (f.isFile) {
+                    zip.putNextEntry(ZipEntry("images/${it.id}.png"))
+                    f.inputStream().use { input -> input.copyTo(zip) }
+                    zip.closeEntry()
+                }
+                onItem(i + 1, items.size)
+            }
+        }
+    }
+
+    /**
+     * 書き出した zip（exportZip の形式）を読み込んで、履歴に足す。
+     * 同じ id の項目は飛ばす（上書きしない）。画像が zip に無い項目は足さない。open は読み直せる入力（index.json を読んでから、画像を取る）。
+     */
+    fun importZip(open: () -> InputStream, onItem: (Int, Int) -> Unit): ImportResult {
+        val items = open().use { raw ->
+            ZipInputStream(raw).use { zip ->
+                var found: List<HistoryItem>? = null
+                generateSequence { zip.nextEntry }.forEach { e ->
+                    if (e.name == "index.json") found = parseItems(zip.readBytes().toString(Charsets.UTF_8))
+                }
+                found
+            }
+        } ?: throw IOException("index.json が zip に無い")
+        val existing = load().map { it.id }.toSet()
+        val candidates = items.filter { ID.matches(it.id) && it.id !in existing }
+        val wantedIds = candidates.map { it.id }.toSet()
+        val written = HashSet<String>()
+        open().use { raw ->
+            ZipInputStream(raw).use { zip ->
+                generateSequence { zip.nextEntry }.forEach { e ->
+                    val id = IMAGE.matchEntire(e.name)?.groupValues?.get(1) ?: return@forEach
+                    if (id !in wantedIds) return@forEach
+                    val f = File(dir, "$id.png")
+                    val tmp = File(dir, "$id.png.part")
+                    tmp.outputStream().use { zip.copyTo(it) }
+                    f.delete()
+                    if (tmp.renameTo(f)) {
+                        written.add(id)
+                        onItem(written.size, wantedIds.size)
+                    }
+                }
+            }
+        }
+        val added = candidates.filter { it.id in written }
+        synchronized(lock) { write((added + load()).sortedByDescending { it.createdAt }) }
+        return ImportResult(added = added.size, skipped = items.size - candidates.size, noImage = candidates.size - added.size)
+    }
+
+    private companion object {
+        val ID = Regex("\\d+")
+        val IMAGE = Regex("images/(\\d+)\\.png")
     }
 }

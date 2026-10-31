@@ -31,6 +31,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.dragonspeedxl.app.HISTORY_GRID_MAX
 import com.dragonspeedxl.app.HISTORY_GRID_MIN
+import com.dragonspeedxl.app.MainActivity
 import com.dragonspeedxl.app.MainViewModel
 import com.dragonspeedxl.app.security.Biometrics
 
@@ -114,6 +115,17 @@ fun SettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     "表示枚数：${vm.historyPageSize}枚",
                     style = MaterialTheme.typography.bodyMedium,
                 )
+                // 履歴を zip（画像と index.json）に書き出す。保存先はユーザーが選ぶ。裏で進み、通知に出す
+                val activity = LocalContext.current.activity() as? MainActivity
+                OutlinedButton(
+                    onClick = { activity?.createFile(vm.historyExportName(), "application/zip") { uri -> if (uri != null) vm.exportHistory(uri) } },
+                    enabled = vm.history.isNotEmpty() && activity != null,
+                ) { Text("履歴を書き出す（画像と一覧・zip）") }
+                // 書き出した zip を読み込んで、足りない項目を履歴に足す（同じ id は飛ばす）
+                OutlinedButton(
+                    onClick = { activity?.pickFile { uri -> if (uri != null) vm.importHistory(uri) } },
+                    enabled = activity != null,
+                ) { Text("履歴を読み込む（zip）") }
                 // SSXL の「除外」（blurBlacklist）。オンのとき、下の語句を含む履歴を隠す
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
