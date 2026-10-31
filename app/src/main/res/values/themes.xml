@@ -1,0 +1,7 @@
+<resources>
+    <!-- 明暗はシステムに追従（Compose 側の AppTheme が壁紙由来の Material You カラーを当てる）。固定の背景色は置かない。タイトルバーは出さない -->
+    <style name="Theme.Dragonspeedxl" parent="android:Theme.DeviceDefault.DayNight">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>

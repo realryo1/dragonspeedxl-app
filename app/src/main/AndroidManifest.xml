@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Danbooru のタグ補完（プロンプトチップ）だけに使う。生成そのものは端末内で完結する -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="false"
+        android:extractNativeLibs="true"
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.Dragonspeedxl">
+        <!-- HTP（FastRPC）の Stub が dlopen する CDSP 側ライブラリ。Android 12+ はマニフェストで宣言しないと見えない -->
+        <uses-native-library android:name="libcdsprpc.so" android:required="false" />
+        <uses-native-library android:name="libadsprpc.so" android:required="false" />
+        <!-- GPU（QNN GPU バックエンド）で VAE を分担するのに必要 -->
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- テキストエンコーダ（CLIP）を動かす別プロセス。UNet とは DSP のセッションが別になる（ClipService.kt） -->
+        <service
+            android:name=".engine.ClipService"
+            android:exported="false"
+            android:process=":clip" />
+        <!-- アプリのフォルダを「ファイル」アプリのサイドバーに出す（モデルの出し入れ・履歴画像の取り出し用） -->
+        <provider
+            android:name=".files.AppFilesProvider"
+            android:authorities="com.dragonspeedxl.app.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+    </application>
+</manifest>

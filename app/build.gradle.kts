@@ -1,0 +1,74 @@
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
+}
+
+android {
+    namespace = "com.dragonspeedxl.app"
+    compileSdk = 34
+    ndkVersion = "30.0.16248370"
+
+    defaultConfig {
+        applicationId = "com.dragonspeedxl.app"
+        minSdk = 31
+        targetSdk = 34
+        versionCode = 1
+        versionName = "0.1.0"
+
+        ndk { abiFilters += "arm64-v8a" }
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+                arguments += listOf("-DANDROID_STL=c++_shared")
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "4.1.2"
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = "17" }
+    buildFeatures { compose = true }
+
+    // LoRA の変換（lora/LoraConverter.kt）が読む layout.json と attach_map.json は、PC 版（loraconverter/data）と同じものを使う（写しを持たない）
+    sourceSets.getByName("main").assets.srcDirs("src/main/assets", "../../loraconverter/data")
+
+    packaging {
+        jniLibs {
+            // Skel（libQnnHtpV8xSkel.so）を実ファイルとして展開する（plan Phase 5）
+            useLegacyPackaging = true
+        }
+    }
+}
+
+dependencies {
+    val composeBom = platform("androidx.compose:compose-bom:2024.09.00")
+    implementation(composeBom)
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.activity:activity-compose:1.9.2")
+    implementation("androidx.biometric:biometric:1.1.0")   // 指紋認証ロック（BiometricPrompt は FragmentActivity が必要）
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")   // JVM のテストでは Android の org.json が使えないので、本物を入れる
+}
