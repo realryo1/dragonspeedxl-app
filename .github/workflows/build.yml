@@ -1,14 +1,11 @@
 name: build-apk
 
-# 手動で実行する（Actions の「Run workflow」）。
-# tag を入れると、APK を GitHub Release に上げる。空なら、Actions の artifact だけ。
+# 「v」で始まるタグを push すると、そのタグの Release を自動で作る（タグ名は push したものがそのまま使われる）。
+# 手動で実行（Actions の「Run workflow」）するときは、ブランチかタグを選ぶ。タグを選んだときだけ Release を作り、ブランチなら artifact だけ作る。
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release のタグ（例: v0.1.0）。空なら artifact だけ作る"
-        required: false
-        default: ""
 
 # 既定は読み取りだけ。書き込み（Release）は release ジョブにだけ与える。
 permissions:
@@ -18,8 +15,6 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    # 署名鍵と DEPS_TOKEN は、この environment の中でだけ使う。Settings → Environments で reviewers（承認者）を設定すること。
-    environment: release-signing
     steps:
       # 認証情報をディスクに残さない（persist-credentials: false）。ビルドが読む依存ライブラリから GITHUB_TOKEN を取られないように。
       - name: Checkout this repository
@@ -91,7 +86,8 @@ jobs:
 
   # Release への書き込みだけをここに置く。署名鍵は使わない（build で作った APK を受け取るだけ）。
   release:
-    if: ${{ inputs.tag != '' }}
+    # タグのとき（push、またはタグを選んだ手動実行）だけ Release を作る。ブランチの手動実行は artifact だけ。
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -107,8 +103,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: ${{ inputs.tag }}
-          name: dragonspeedXL ${{ inputs.tag }}
+          tag_name: ${{ github.ref_name }}
+          name: dragonspeedXL ${{ github.ref_name }}
           prerelease: true
           files: apk/app-release.apk
           body: |
