@@ -75,7 +75,7 @@ bool Exists(const std::string& p) { std::ifstream f(p); return f.good(); }
 // 共通の必須ファイル。NPU の VAE は vae_64_w8a16.bin（あれば優先）か vae_64.bin（FP16）のどちらか 1 つでよい（MissingFiles で別に調べる）
 const char* kFiles[] = {"clip_l.bin", "clip_g.bin", "text_projection.f32", "clip_vocab.tsv", "clip_merges.txt"};
 
-std::atomic<int> g_gpu_cap{90};   // GPU の使用率の上限（%）
+std::atomic<int> g_gpu_cap{100};   // GPU の使用率の上限（%）。既定は制限なし
 // メモリ節約モード: UNet の共有 bin を、今の向きの 2 グラフ（Base とタイル）だけで読む（約 1.4GB 減る）。向きが変わるたびに読み直す
 std::atomic<bool> g_mem_saver{false};
 // VAE の 1 タイルの所要（ms。直近の実測の移動平均。GPU は使用率の上限で休む分を含む）。GPU がタイルを取るかの判断に使う

@@ -9,6 +9,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import com.dragonspeedxl.app.engine.GenerationResult
 import com.dragonspeedxl.app.engine.Orientation
+import com.dragonspeedxl.app.lora.LoraConverter
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -199,7 +200,7 @@ class HistoryStore(context: Context) {
             ZipInputStream(raw).use { zip ->
                 var found: List<HistoryItem>? = null
                 generateSequence { zip.nextEntry }.forEach { e ->
-                    if (e.name == "index.json") found = parseItems(zip.readBytes().toString(Charsets.UTF_8))
+                    if (e.name == "index.json") found = parseItems(readLimited(zip, MAX_INDEX_BYTES).toString(Charsets.UTF_8)).map(::safeLora)
                 }
                 found
             }
@@ -215,7 +216,10 @@ class HistoryStore(context: Context) {
                     if (id !in wantedIds) return@forEach
                     val f = File(dir, "$id.png")
                     val tmp = File(dir, "$id.png.part")
-                    tmp.outputStream().use { zip.copyTo(it) }
+                    if (!copyLimited(zip, tmp, MAX_IMAGE_BYTES)) {   // 上限を超える画像は足さない（noImage に数える）
+                        tmp.delete()
+                        return@forEach
+                    }
                     f.delete()
                     if (tmp.renameTo(f)) {
                         written.add(id)
@@ -229,8 +233,51 @@ class HistoryStore(context: Context) {
         return ImportResult(added = added.size, skipped = items.size - candidates.size, noImage = candidates.size - added.size)
     }
 
+    /** 取り込んだ項目の LoRA 名を確かめる。LoRA の名前として使えない（区切り文字などを含む）なら、LoRA なしの項目にする。 */
+    private fun safeLora(item: HistoryItem): HistoryItem {
+        if (item.lora.isEmpty()) return item
+        val ok = runCatching { LoraConverter.checkName(item.lora) }.isSuccess
+        return if (ok) item else item.copy(lora = "", loraStrength = 0f)
+    }
+
+    /** zip の今のエントリを、上限まで読む。超えたら例外。 */
+    private fun readLimited(input: InputStream, max: Int): ByteArray {
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(1 shl 16)
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            if (out.size() + n > max) throw IOException("index.json が大きすぎる（上限 ${max shr 20} MB）")
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray()
+    }
+
+    /** 入力を file へ書く。上限を超えたら止めて false（書きかけは呼び出し側が消す）。 */
+    private fun copyLimited(input: InputStream, file: File, max: Long): Boolean {
+        var total = 0L
+        var ok = true
+        val buf = ByteArray(1 shl 16)
+        file.outputStream().use { out ->
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                total += n
+                if (total > max) {
+                    ok = false
+                    break
+                }
+                out.write(buf, 0, n)
+            }
+        }
+        return ok
+    }
+
     private companion object {
         val ID = Regex("\\d+")
         val IMAGE = Regex("images/(\\d+)\\.png")
+        /** 取り込む zip の上限（一覧は数 MB もあれば十分。画像は 1080p の PNG より十分大きく取る）。 */
+        const val MAX_INDEX_BYTES = 8 shl 20
+        const val MAX_IMAGE_BYTES = 64L shl 20
     }
 }

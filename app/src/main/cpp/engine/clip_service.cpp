@@ -26,6 +26,8 @@ namespace {
 
 constexpr int kEncode = 1, kWarm = 2, kUnload = 3;
 constexpr int kHidden = 77 * 2048, kPooled = 1280;
+// 相手（ソケットの向こう）が送る長さの上限。確保の前に検査する（巨大な値で確保させない）
+constexpr uint32_t kMaxPrompt = 16 * 1024, kMaxLora = 256;
 
 struct Header { uint32_t type, prompt_len, lora_len; float te_alpha; };
 
@@ -189,9 +191,19 @@ void ClipServe(const std::string& model_dir, const std::string& lib_dir) {
     for (;;) {
         int fd = accept4(ls, nullptr, nullptr, SOCK_CLOEXEC);
         if (fd < 0) continue;
+        // 抽象ソケットはファイルの権限を持たないので、接続元の uid がこのアプリの uid かを確かめる
+        ucred cred{};
+        socklen_t cred_len = sizeof cred;
+        if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &cred_len) != 0 || cred.uid != getuid()) {
+            close(fd);
+            continue;
+        }
         for (;;) {
             Header h;
             if (!ReadAll(fd, &h, sizeof h)) break;
+            // 長さと要求の種類を、確保や処理の前に検査する。範囲外なら接続を閉じる
+            const bool known = h.type == kEncode || h.type == kWarm || h.type == kUnload;
+            if (!known || h.prompt_len > kMaxPrompt || h.lora_len > kMaxLora) break;
             std::string prompt(h.prompt_len, '\0'), lora(h.lora_len, '\0');
             if ((h.prompt_len && !ReadAll(fd, &prompt[0], h.prompt_len)) || (h.lora_len && !ReadAll(fd, &lora[0], h.lora_len))) break;
             std::vector<float> out;

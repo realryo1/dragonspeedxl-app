@@ -103,6 +103,20 @@ fun SettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                 note?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
 
                 Text("履歴", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                // SSXL の「除外」（blurBlacklist）。オンのとき、下の語句を含む履歴を隠す
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("除外")
+                        Text("以下のプロンプトが含まれている履歴を隠す", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = vm.blurBlacklist, onCheckedChange = { vm.updateBlurBlacklist(it) })
+                }
+                OutlinedTextField(
+                    value = vm.imageBlacklistTags,
+                    onValueChange = { vm.updateImageBlacklistTags(it) },
+                    label = { Text("除外ワード") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 Text("1ページの件数")
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("横")
@@ -126,20 +140,6 @@ fun SettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     onClick = { activity?.pickFile { uri -> if (uri != null) vm.importHistory(uri) } },
                     enabled = activity != null,
                 ) { Text("履歴を読み込む（zip）") }
-                // SSXL の「除外」（blurBlacklist）。オンのとき、下の語句を含む履歴を隠す
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("除外")
-                        Text("以下のプロンプトが含まれている履歴を隠す", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Switch(checked = vm.blurBlacklist, onCheckedChange = { vm.updateBlurBlacklist(it) })
-                }
-                OutlinedTextField(
-                    value = vm.imageBlacklistTags,
-                    onValueChange = { vm.updateImageBlacklistTags(it) },
-                    label = { Text("除外ワード") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
 
                 Text("起動時のプロンプト", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                 OutlinedTextField(
@@ -173,18 +173,18 @@ fun SettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     missingFile = taesdMissing,
                 )
                 OptionSwitch(
-                    title = "高速デコード",
-                    detail = "TAESDでデコードすることで数秒速くなります。細部が少し劣化します。",
-                    checked = vm.draftMode,
-                    onCheckedChange = { vm.updateDraftMode(it) },
-                    missingFile = taesdMissing,
-                )
-                OptionSwitch(
                     title = "メモリ節約モード",
                     detail = "UNetを今の向きの分だけ読み込み、メモリ(DMA-BUF)を約1.4GB減らします。縦横を切り替えるときに約2秒の読み直しが入ります。次の生成から反映されます。",
                     checked = vm.memorySaver,
                     onCheckedChange = { vm.updateMemorySaver(it) },
                     missingFile = null,
+                )
+                OptionSwitch(
+                    title = "高速デコード",
+                    detail = "TAESDでデコードすることで数秒速くなります。細部が少し劣化します。",
+                    checked = vm.draftMode,
+                    onCheckedChange = { vm.updateDraftMode(it) },
+                    missingFile = taesdMissing,
                 )
                 // GPU の上限は、高速デコードが実際に効いていないとき（VAE でデコードするとき）だけ出す。TAESD が無いときは保存がオンでも VAE になるので出す
                 if (!vm.draftActive) {

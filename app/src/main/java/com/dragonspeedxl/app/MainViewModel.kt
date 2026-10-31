@@ -430,12 +430,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 1 ページの表示枚数（横 × 縦）。 */
     val historyPageSize: Int get() = historyCols * historyRows
 
-    /** GPU 使用率の上限（%）。既定 90。VAE で GPU を NPU と分担するとき、OS の描画まで重くならないよう余白を残す。 */
-    var gpuCap by mutableStateOf(prefs.getInt("gpuCap", 90).coerceIn(10, 100))
+    /** GPU 使用率の上限（%）。既定は制限なし（100）。描画が重くなるときは設定で下げる（VAE で GPU を NPU と分担するときの余白）。 */
+    var gpuCap by mutableStateOf(prefs.getInt("gpuCap", 100).coerceIn(10, 100))
         private set
 
-    /** メモリ節約モード。UNet を今の向きの 2 グラフだけ読み、端末のメモリ（DMA-BUF）を約 1.4GB 減らす。向きを変えるたびに UNet を読み直す（約 2 秒）。既定はオフ。 */
-    var memorySaver by mutableStateOf(prefs.getBoolean("memorySaver", false))
+    /** メモリ節約モード。UNet を今の向きの 2 グラフだけ読み、端末のメモリ（DMA-BUF）を約 1.4GB 減らす。向きを変えるたびに UNet を読み直す（約 2 秒）。既定はオン。 */
+    var memorySaver by mutableStateOf(prefs.getBoolean("memorySaver", true))
         private set
 
     init { native.setGpuCap(gpuCap); native.setMemorySaver(memorySaver) }
@@ -452,9 +452,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * 高速デコード: 最終の latent を VAE ではなく TAESD（GPU）でデコードする。数秒速くなるが、細部はやや甘い。
      * TAESD のモデル（gpu/taesd_*_fp32.dlc、またはコンパイル済みの *_gpu.bin）が無いときは、設定で選べない。選んでいても実行時は VAE に戻る。
-     * 設定で切り替え、覚える（既定オフ）。履歴には draft の印が付く。
+     * 設定で切り替え、覚える（既定オン）。履歴には draft の印が付く。
      */
-    var draftMode by mutableStateOf(prefs.getBoolean("draftMode", false))
+    var draftMode by mutableStateOf(prefs.getBoolean("draftMode", true))
         private set
 
     fun updateDraftMode(on: Boolean) {

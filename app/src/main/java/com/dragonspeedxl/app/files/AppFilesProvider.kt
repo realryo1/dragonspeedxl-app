@@ -11,6 +11,7 @@ import android.provider.DocumentsContract.Root
 import android.provider.DocumentsProvider
 import android.webkit.MimeTypeMap
 import com.dragonspeedxl.app.R
+import com.dragonspeedxl.app.security.AppLock
 import java.io.File
 import java.io.FileNotFoundException
 
@@ -33,9 +34,15 @@ class AppFilesProvider : DocumentsProvider() {
         ).onEach { it.dir.mkdirs() }
     }
 
+    /**
+     * 見せてよいフォルダ。アプリのロックが有効なあいだは、履歴（生成した画像）を出さない。
+     * ロックを解かないと見られない、という約束を、システムの「ファイル」アプリからも守るため。
+     */
+    private fun visibleMounts(): List<Mount> = if (AppLock(context!!).enabled) mounts.filter { it.name != HISTORY } else mounts
+
     override fun onCreate(): Boolean = true
 
-    private fun mountOf(name: String) = mounts.firstOrNull { it.name == name } ?: throw FileNotFoundException("不明なフォルダ: $name")
+    private fun mountOf(name: String) = visibleMounts().firstOrNull { it.name == name } ?: throw FileNotFoundException("不明なフォルダ: $name")
 
     /** ドキュメント ID → File。仮想ルート（"root"）は null。マウントの外へ出る相対パスは拒否する。 */
     private fun fileFor(docId: String): File? {
@@ -51,7 +58,7 @@ class AppFilesProvider : DocumentsProvider() {
 
     private fun idFor(file: File): String {
         val p = file.canonicalPath
-        for (m in mounts) {
+        for (m in visibleMounts()) {
             val base = m.dir.canonicalPath
             if (p == base) return "${m.name}:"
             if (p.startsWith(base + File.separator)) return "${m.name}:" + p.substring(base.length + 1)
@@ -102,7 +109,7 @@ class AppFilesProvider : DocumentsProvider() {
             .add(Root.COLUMN_FLAGS, Root.FLAG_SUPPORTS_CREATE or Root.FLAG_SUPPORTS_IS_CHILD or Root.FLAG_LOCAL_ONLY)
             .add(Root.COLUMN_ICON, R.drawable.ic_launcher)
             .add(Root.COLUMN_TITLE, "dragonspeedXL")
-            .add(Root.COLUMN_SUMMARY, "models / history")
+            .add(Root.COLUMN_SUMMARY, if (visibleMounts().size > 1) "models / history" else "models")
             .add(Root.COLUMN_DOCUMENT_ID, ROOT_DOC)
             .add(Root.COLUMN_AVAILABLE_BYTES, mounts.first().dir.usableSpace)
         return c
@@ -119,7 +126,7 @@ class AppFilesProvider : DocumentsProvider() {
         val c = MatrixCursor(projection ?: DEFAULT_DOC_PROJECTION)
         val dir = fileFor(parentDocumentId)
         if (dir == null) {
-            mounts.forEach { addRow(c, "${it.name}:", it.dir) }
+            visibleMounts().forEach { addRow(c, "${it.name}:", it.dir) }
         } else {
             dir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))?.forEach { addRow(c, idFor(it), it) }
         }
@@ -182,6 +189,7 @@ class AppFilesProvider : DocumentsProvider() {
 
     private companion object {
         const val ROOT_DOC = "root"
+        const val HISTORY = "history"
         val DEFAULT_ROOT_PROJECTION = arrayOf(
             Root.COLUMN_ROOT_ID, Root.COLUMN_FLAGS, Root.COLUMN_ICON, Root.COLUMN_TITLE, Root.COLUMN_SUMMARY,
             Root.COLUMN_DOCUMENT_ID, Root.COLUMN_AVAILABLE_BYTES,
