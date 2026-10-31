@@ -43,11 +43,12 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      # ubuntu の runner には Android SDK（sdkmanager）が入っている。足りないパッケージだけ入れる。
+      # ubuntu の runner には Android SDK が入っている（ANDROID_HOME）。sdkmanager は版の付いた場所にあるので、そこから探す。
       - name: Install NDK and CMake
         run: |
-          yes | sdkmanager --licenses > /dev/null
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;30.0.16248370" "cmake;4.1.2"
+          SDKMANAGER="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0" "ndk;30.0.16248370" "cmake;4.1.2"
 
       - name: Unit tests
         run: ./gradlew :app:testDebugUnitTest
