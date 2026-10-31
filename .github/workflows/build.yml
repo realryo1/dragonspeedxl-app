@@ -53,8 +53,20 @@ jobs:
       - name: Unit tests
         run: ./gradlew :app:testDebugUnitTest
 
-      - name: Build debug APK
-        run: ./gradlew :app:assembleDebug
+      # リリースの署名鍵は secrets から復元する（リポジトリには入れない）。鍵の場所とパスワードは環境変数で渡す（app/build.gradle.kts）。
+      - name: Restore release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "DSXL_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
+      - name: Build release APK
+        env:
+          DSXL_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          DSXL_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          DSXL_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew :app:assembleRelease
 
       - name: Read version
         id: ver
@@ -63,8 +75,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dragonspeedxl-${{ steps.ver.outputs.name }}-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: dragonspeedxl-${{ steps.ver.outputs.name }}-release
+          path: app/build/outputs/apk/release/app-release.apk
 
       - name: Create GitHub Release
         if: ${{ inputs.tag != '' }}
@@ -73,7 +85,7 @@ jobs:
           tag_name: ${{ inputs.tag }}
           name: dragonspeedXL ${{ inputs.tag }}
           prerelease: true
-          files: app/build/outputs/apk/debug/app-debug.apk
+          files: app/build/outputs/apk/release/app-release.apk
           body: |
-            Discord 鯖向けの試験版（debug 署名の APK）。
-            モデルは Hugging Face（realryo1/dragonspeedxl-models、CC BY-NC-SA 4.0）から取得する（ダウンロード機能は未実装）。
+            Discord 鯖向けのリリース版（リリース鍵で署名した APK）。
+            初回に、モデルを Hugging Face（realryo1/dragonspeedxl-models、CC BY-NC-SA 4.0）から取得します（約 7.6GB）。

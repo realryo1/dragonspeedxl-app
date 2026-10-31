@@ -32,9 +32,23 @@ android {
         }
     }
 
+    // リリースの署名。鍵は環境変数で渡す（DSXL_KEYSTORE: 鍵ファイルのパス、DSXL_KEYSTORE_PASSWORD、DSXL_KEY_ALIAS、DSXL_KEY_PASSWORD）。
+    // 渡されていないときは debug 署名のまま（手元の assembleRelease が動くように）。CI では secrets から渡す。
+    signingConfigs {
+        create("release") {
+            System.getenv("DSXL_KEYSTORE")?.let { path ->
+                storeFile = file(path)
+                storePassword = System.getenv("DSXL_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("DSXL_KEY_ALIAS")
+                keyPassword = System.getenv("DSXL_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = if (System.getenv("DSXL_KEYSTORE") != null) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
         }
         // 別アプリとして入れる試験用（applicationId が別なので、本体のデータ・モデルには触れない）。installDltest で入れる。
         create("dltest") {

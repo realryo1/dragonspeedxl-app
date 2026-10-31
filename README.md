@@ -60,8 +60,9 @@ QNN（Qualcomm AI Runtime）の SDK 由来のものは、このリポジトリ�
 `Actions` の「build-apk」を手動で実行します（`workflow_dispatch`）。
 
 - QNN のヘッダーと `.so` は、非公開の補助リポジトリ `realryo1/dragonspeedxl-qnn-deps` から取ります。読むには、secret `DEPS_TOKEN`（そのリポジトリだけを読める fine-grained PAT）が要ります。
-- `tag` を入れると、Debug 署名の APK を GitHub Release に上げます（試験版）。空なら artifact だけ。
-- 署名（release 用の鍵）は未決定です。今は debug 署名です。
+- `tag` を入れると、リリース鍵で署名した APK（`app-release.apk`）を GitHub Release に上げます。空なら artifact だけ。
+- 署名の鍵は secrets（`KEYSTORE_BASE64`、`KEYSTORE_PASSWORD`、`KEY_ALIAS`、`KEY_PASSWORD`）から復元します。鍵そのものはリポジトリには入れません。
+- 手元で同じ署名のビルドをするときは、環境変数 `DSXL_KEYSTORE`（鍵ファイルのパス）、`DSXL_KEYSTORE_PASSWORD`、`DSXL_KEY_ALIAS`、`DSXL_KEY_PASSWORD` を設定して `./gradlew :app:assembleRelease` を実行します。
 
 ## 構成
 
