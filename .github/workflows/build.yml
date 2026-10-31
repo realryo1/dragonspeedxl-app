@@ -43,8 +43,7 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Set up Android SDK, NDK and CMake
-        uses: android-actions/setup-android@v3
+      # ubuntu の runner には Android SDK（sdkmanager）が入っている。足りないパッケージだけ入れる。
       - name: Install NDK and CMake
         run: |
           yes | sdkmanager --licenses > /dev/null
