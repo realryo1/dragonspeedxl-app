@@ -31,6 +31,14 @@ QNN（Qualcomm AI Runtime）の SDK 由来のものは、このリポジトリ�
 
 マニフェストの `uses-native-library`（`libcdsprpc.so`、`libadsprpc.so`、`libOpenCL.so`）は、QNN の HTP と GPU の初期化に要ります。外すと `QnnDevice_create` が失敗します。
 
+## CI（GitHub Actions）
+
+`Actions` の「build-apk」を手動で実行します（`workflow_dispatch`）。
+
+- QNN のヘッダーと `.so` は、非公開の補助リポジトリ `realryo1/dragonspeedxl-qnn-deps` から取ります。読むには、secret `DEPS_TOKEN`（そのリポジトリだけを読める fine-grained PAT）が要ります。
+- `tag` を入れると、Debug 署名の APK を GitHub Release に上げます（試験版）。空なら artifact だけ。
+- 署名（release 用の鍵）は未決定です。今は debug 署名です。
+
 ## 構成
 
 ```
