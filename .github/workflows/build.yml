@@ -1,10 +1,8 @@
 name: build-apk
 
-# 「v」で始まるタグを push すると、そのタグの Release を自動で作る（タグ名は push したものがそのまま使われる）。
-# 手動で実行（Actions の「Run workflow」）するときは、ブランチかタグを選ぶ。タグを選んだときだけ Release を作り、ブランチなら artifact だけ作る。
+# 手動で実行（Actions の「Run workflow」）すると、APK を作り、Release を次の番号で作る。
+# 番号は既存の v<番号> タグの最大に 1 を足したもの（v1、v2 があれば v3）。入力はない。
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
 
 # 既定は読み取りだけ。書き込み（Release）は release ジョブにだけ与える。
@@ -86,14 +84,20 @@ jobs:
 
   # Release への書き込みだけをここに置く。署名鍵は使わない（build で作った APK を受け取るだけ）。
   release:
-    # タグのとき（push、またはタグを選んだ手動実行）だけ Release を作る。ブランチの手動実行は artifact だけ。
-    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
     steps:
+      # 既存の v<番号> タグの最大に 1 を足す（v1、v2 があれば v3）。v の付かないタグ（2 など）は数えない。
+      - name: Decide next tag
+        id: tag
+        run: |
+          max=$(git ls-remote --tags "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
+            | grep -oE 'refs/tags/v[0-9]+$' | sed 's#refs/tags/v##' | sort -n | tail -1)
+          echo "name=v$(( ${max:-0} + 1 ))" >> "$GITHUB_OUTPUT"
+
       - name: Download APK
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -103,8 +107,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: dragonspeedXL ${{ github.ref_name }}
+          tag_name: ${{ steps.tag.outputs.name }}
+          target_commitish: ${{ github.sha }}
+          name: dragonspeedXL ${{ steps.tag.outputs.name }}
           prerelease: true
           files: apk/app-release.apk
           body: |
