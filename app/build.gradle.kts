@@ -48,6 +48,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // 本体（デバッグ版の com.dragonspeedxl.app）と別アプリとして入る。データは別々（モデルも履歴も別）。
+            applicationIdSuffix = ".release"
             signingConfig = if (System.getenv("DSXL_KEYSTORE") != null) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
         }
         // 別アプリとして入れる試験用（applicationId が別なので、本体のデータ・モデルには触れない）。installDltest で入れる。
