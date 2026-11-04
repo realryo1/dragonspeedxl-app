@@ -123,6 +123,8 @@ public:
     static const char* UnetFile() { return "unet_lora_4g.bin"; }               // 縦横 4 グラフの LoRA つき共有 bin
     static const char* DefaultAdapter() { return "unet_lora_4g_default.bin"; }  // LoRA を使わないときの super adapter（重みが 0）
     static bool HasUnet(const std::string& model_dir);
+    // GPU 用 VAE が使えるか（gpu/vae_64_fp32.dlc か gpu/vae_64_gpu.bin と、libQnnGpu.so がある）
+    static bool HasGpuVae(const std::string& model_dir, const std::string& lib_dir);
 
 private:
     bool Encode(const std::string& prompt, std::vector<float>* hidden, std::vector<float>* pooled, std::string* err);

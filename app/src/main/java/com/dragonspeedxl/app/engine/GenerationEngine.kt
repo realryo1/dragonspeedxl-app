@@ -1,6 +1,7 @@
 package com.dragonspeedxl.app.engine
 
 import android.graphics.Bitmap
+import com.dragonspeedxl.app.lora.LoraUse
 
 /** 解像度の向き。Base は 1280×720 / 720×1280、Hires は ×1.5（1920×1080 / 1080×1920）。 */
 enum class Orientation(val label: String, val baseW: Int, val baseH: Int) {
@@ -18,6 +19,7 @@ enum class Stage(val label: String) {
     HIRES_UNET("Hires UNet"),
     VAE("VAE"),
     LOAD("モデルのロード"),   // ネイティブの PStage::kLoad と順を合わせる（生成の段階ではなく、ロードボタンの進捗）
+    MIX("LoRA の合成"),       // アプリ側だけの段階（LoRA を 2 つ以上使うときの adapter の合成。step は 0〜100 の %）。ネイティブからは来ない
 }
 
 data class GenerationRequest(
@@ -34,12 +36,17 @@ data class GenerationRequest(
     val hiresDenoise: Double = 0.39,
     /** 速度優先: 最終の latent を VAE ではなく TAESD（GPU）でデコードする（約 2 秒速い。細部は少し甘い）。TAESD のモデルが無いときは VAE。 */
     val draft: Boolean = false,
-    /** LoRA: 名前（models/loras/<名前>.4g.bin）。空なら LoRA なし（default の adapter）。縦横・Hires のどれでも使える。 */
+    /**
+     * エンジンに渡す LoRA の adapter: 名前（models/loras/<名前>.4g.bin）。空なら LoRA なし（default の adapter）。縦横・Hires のどれでも使える。
+     * LoRA を 2 つ以上使うときは、合成した adapter（"mix/<鍵>" = loras/mix/<鍵>.4g.bin）。生成の直前に loras から決める。
+     */
     val lora: String = "",
-    /** LoRA の実行時の alpha 入力（強さ w × その LoRA の係数 c）。 */
+    /** LoRA の実行時の alpha 入力（強さ w × その LoRA の係数 c。合成した adapter は、その係数 C）。 */
     val loraAlpha: Float = 0f,
-    /** テキストエンコーダ（CLIP）の LoRA の強さ w（係数 c は掛けない）。CLIP の LoRA（clip_*_lora.bin と loras/<名前>.clip_*.bin）があるときだけ使われる。 */
+    /** テキストエンコーダ（CLIP）の LoRA の強さ w（係数 c は掛けない。合成した adapter は 1）。CLIP の LoRA（clip_*_lora.bin と loras/<名前>.clip_*.bin）があるときだけ使われる。 */
     val loraTeAlpha: Float = 0f,
+    /** 使う LoRA と強さ（選んだ順。強さ 0 は入れない）。履歴と生成情報に残すもの。lora / loraAlpha / loraTeAlpha はこれから決める。 */
+    val loras: List<LoraUse> = emptyList(),
 )
 
 data class StageTiming(val stage: Stage, val millis: Long)

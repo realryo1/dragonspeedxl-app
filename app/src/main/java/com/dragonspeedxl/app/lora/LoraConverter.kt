@@ -26,26 +26,27 @@ class LoraConverter(layoutJson: String, attachJson: String, windowsJson: String,
     /** clipFiles: 作ったテキストエンコーダの adapter（<名前>.clip_l.bin、.clip_g.bin。LoRA にテキストエンコーダの重みが無ければ空）。 */
     class Result(val c: Double, val missing: Int, val total: Int, val overRatio: Double, val clipFiles: List<String> = emptyList())
 
-    private val clip = ClipLoraConverter(clipLayoutJson)
+    internal val clip = ClipLoraConverter(clipLayoutJson)
 
-    private class Tensor(
+    /** attach 点 1 つ。A は [64, in]、B は [out, 64] の int8 を、固定の尺度 aScale / bScale で持つ（LoraMixer も使う）。 */
+    internal class Tensor(
         val node: String, val inC: Int, val outC: Int, val aScale: Float, val bScale: Float,
         val aOff: LongArray, val bOff: LongArray, val stat: Array<Stat>,
     )
 
-    private class Stat(val aStat: Long, val aZp: Int, val bStat: Long, val bZp: Int)
+    internal class Stat(val aStat: Long, val aZp: Int, val bStat: Long, val bZp: Int)
     private class Entry(val base: String)
     /** 末尾の窓。グラフの adapter の [so, so + n) が、末尾の s から始まる。 */
     private class Win(val s: Long, val so: Long, val n: Long)
     private class Tail(val offset: Long, val wins: List<Win>)   // wins は so の昇順
 
-    private val bRef: Double
-    private val tensors = ArrayList<Tensor>()
+    internal val bRef: Double
+    internal val tensors = ArrayList<Tensor>()
     private val byNorm = HashMap<String, String>()   // diffusers の層の名前（'.' を '_' にしたもの） → attach 点（ONNX のノード名）
     private val header: Int        // super adapter のヘッダーの長さ（4 グラフ: 21,024）
     private val body: Long         // 本体の長さ（縦 Base の adapter の大きさ − 18,048）
     private val tails: List<Tail>  // 縦タイル、横 Base、横タイル
-    private val size: Long         // super adapter の大きさ
+    internal val size: Long        // super adapter の大きさ
 
     init {
         val layout = JSONObject(layoutJson)
@@ -140,17 +141,8 @@ class LoraConverter(layoutJson: String, attachJson: String, windowsJson: String,
                         if (abs(v) > t.bScale * QMAX_F) over++
                     }
                     total += qa.size.toLong() + qb.size
-                    val pa = packConv(qa, MAX_RANK, t.inC)
-                    val pb = packConv(qb, t.outC, MAX_RANK)
-                    val sa = rowSums(qa, MAX_RANK, t.inC)
-                    val sb = rowSums(qb, t.outC, MAX_RANK)
-                    for (g in GRAPHS.indices) {
-                        out.write(g, t.aOff[g], pa)
-                        out.write(g, t.bOff[g], pb)
-                        val st = t.stat[g]
-                        out.stats(g, st.aStat, sa, st.aZp)
-                        out.stats(g, st.bStat, sb, st.bZp)
-                    }
+                    out.writeA(t, qa)
+                    out.writeB(t, qb)
                     if (i % 20 == 0) progress("変換中 ${i + 1} / ${tensors.size}", 0.1f + 0.7f * i / tensors.size)
                 }
                 buf.force()
@@ -159,12 +151,7 @@ class LoraConverter(layoutJson: String, attachJson: String, windowsJson: String,
             for (c in ClipLoraConverter.CLIPS.keys) File(outDir, "$name.$c.bin").delete()
             val clipFiles = clip.convert(sf, name, outDir) { msg, f -> progress(msg, 0.8f + 0.17f * f) }
             progress("書き出し中", 0.97f)
-            val dest = File(outDir, name + SUFFIX)
-            dest.delete()
-            if (!part.renameTo(dest)) {   // Windows の JVM（テスト）では、マップが残っていて名前を変えられないことがある。端末（Linux）では起きない
-                part.copyTo(dest, overwrite = true)
-                part.delete()
-            }
+            moveInto(part, File(outDir, name + SUFFIX))
             val meta = JSONObject().put("c", c).put("activation", activation)
             File(outDir, "$name.json").writeText(meta.toString(), Charsets.UTF_8)
             progress("完了", 1f)
@@ -172,12 +159,46 @@ class LoraConverter(layoutJson: String, attachJson: String, windowsJson: String,
         }
     }
 
+    /**
+     * super adapter（buf）から、attach 点 t の int8 の A [64, in] と B [out, 64] を読み戻す（並びを packConv の前に戻す）。
+     * 4 グラフとも同じ値なので、縦 Base の本体から読む。buf は呼び出し側で duplicate したものを渡してよい（位置を動かす）。
+     */
+    internal fun readQ(buf: java.nio.ByteBuffer, t: Tensor): Pair<ByteArray, ByteArray> {
+        fun read(off: Long, n: Int): ByteArray {
+            require(off >= OLD_HEADER) { "${t.node} の位置がヘッダーの中にある" }
+            val b = ByteArray(n)
+            buf.position((off - OLD_HEADER + header).toInt())
+            buf.get(b)
+            return b
+        }
+        return unpackConv(read(t.aOff[0], MAX_RANK * t.inC), MAX_RANK, t.inC) to unpackConv(read(t.bOff[0], t.outC * MAX_RANK), t.outC, MAX_RANK)
+    }
+
+    /** super adapter の書き込み口（LoraMixer も使う）。書き込みは排他する（合成は複数のスレッドから書く）。 */
+    internal fun writer(buf: MappedByteBuffer): Writer = Writer(buf)
+
     /** グラフ g の adapter の位置 off（別 context 用の adapter の座標）への書き込みを、super adapter の位置に置き換えて書く。 */
-    private inner class Writer(private val buf: MappedByteBuffer) {
+    internal inner class Writer(private val buf: MappedByteBuffer) {
         private val four = ByteArray(4)
         private val tailBase = header + body
 
-        fun write(g: Int, off: Long, bytes: ByteArray) {
+        @Synchronized fun force() { buf.force() }
+
+        /** A（int8 [64, in]）を 4 グラフに書き、統計も書く。 */
+        @Synchronized fun writeA(t: Tensor, qa: ByteArray) {
+            val pa = packConv(qa, MAX_RANK, t.inC)
+            val sa = rowSums(qa, MAX_RANK, t.inC)
+            for (g in GRAPHS.indices) { write(g, t.aOff[g], pa); stats(g, t.stat[g].aStat, sa, t.stat[g].aZp) }
+        }
+
+        /** B（int8 [out, 64]）を 4 グラフに書き、統計も書く。 */
+        @Synchronized fun writeB(t: Tensor, qb: ByteArray) {
+            val pb = packConv(qb, t.outC, MAX_RANK)
+            val sb = rowSums(qb, t.outC, MAX_RANK)
+            for (g in GRAPHS.indices) { write(g, t.bOff[g], pb); stats(g, t.stat[g].bStat, sb, t.stat[g].bZp) }
+        }
+
+        private fun write(g: Int, off: Long, bytes: ByteArray) {
             if (g == 0) {   // 縦 Base: 本体へ直接（ヘッダーより前の位置は、super adapter ではひな型のヘッダーが持つ）
                 if (off < OLD_HEADER) return
                 buf.position((off - OLD_HEADER + header).toInt())
@@ -204,7 +225,7 @@ class LoraConverter(layoutJson: String, attachJson: String, windowsJson: String,
         }
 
         /** 統計[j] = -((S[j] * zp + 128) >> 8)。S は出力 j の int8 の重みの合計、zp は入力活性のゼロ点。int32 で 8 バイト刻みに書く。 */
-        fun stats(g: Int, base: Long, sums: LongArray, zp: Int) {
+        private fun stats(g: Int, base: Long, sums: LongArray, zp: Int) {
             val seq = storedBlockOrder((sums.size + 255) / 256)
             val pos = IntArray(seq.size).also { for ((p, l) in seq.withIndex()) it[l] = p }
             for (j in sums.indices) {
@@ -246,14 +267,18 @@ class LoraConverter(layoutJson: String, attachJson: String, windowsJson: String,
 
         private val SGM_IN = mapOf(4 to (1 to 0), 5 to (1 to 1), 7 to (2 to 0), 8 to (2 to 1))
         private val SGM_OUT = mapOf(0 to (0 to 0), 1 to (0 to 1), 2 to (0 to 2), 3 to (1 to 0), 4 to (1 to 1), 5 to (1 to 2))
+        private val SGM_IN_RE = Regex("input_blocks_(\\d+)_1_(.*)")
+        private val SGM_MID_RE = Regex("middle_block_1_(.*)")
+        private val SGM_OUT_RE = Regex("output_blocks_(\\d+)_1_(.*)")
+        private val UNSAFE_NAME = Regex("[^A-Za-z0-9_.-]+")
 
         /** kohya（sgm）の UNet の名前を、diffusers の層の名前（'.' を '_' にしたもの）に直す。diffusers 形式は、そのまま返す。 */
         fun sgmToDiffusersStem(stem: String): String {
-            Regex("input_blocks_(\\d+)_1_(.*)").matchEntire(stem)?.let { m ->
+            SGM_IN_RE.matchEntire(stem)?.let { m ->
                 SGM_IN[m.groupValues[1].toInt()]?.let { (b, i) -> return "down_blocks_${b}_attentions_${i}_${m.groupValues[2]}" }
             }
-            Regex("middle_block_1_(.*)").matchEntire(stem)?.let { return "mid_block_attentions_0_${it.groupValues[1]}" }
-            Regex("output_blocks_(\\d+)_1_(.*)").matchEntire(stem)?.let { m ->
+            SGM_MID_RE.matchEntire(stem)?.let { return "mid_block_attentions_0_${it.groupValues[1]}" }
+            SGM_OUT_RE.matchEntire(stem)?.let { m ->
                 SGM_OUT[m.groupValues[1].toInt()]?.let { (b, i) -> return "up_blocks_${b}_attentions_${i}_${m.groupValues[2]}" }
             }
             return stem
@@ -267,17 +292,16 @@ class LoraConverter(layoutJson: String, attachJson: String, windowsJson: String,
             return (if (x > 0f) q else -q).toByte()
         }
 
-        /** 出力 256 本の塊を、ファイルに並んでいる順（論理番号）で返す。塊が 10 個以下は論理順。 */
-        fun storedBlockOrder(n: Int): List<Int> {
-            if (n <= 10) return (0 until n).toList()
-            val seq = ArrayList<Int>()
-            seq += 0
-            for (i in 4 until n) seq += i
-            for ((v, at) in listOf(1 to 7, 2 to 18, 3 to 29)) {
-                if (v >= n) break
-                seq.add(minOf(at, seq.size), v)
+        /** 出力 256 本の塊を、ファイルに並んでいる順（論理番号）で返す。塊が 10 個以下は論理順（int8。それより多いときは CLIP の FP16 と同じ並び）。 */
+        fun storedBlockOrder(n: Int): List<Int> = if (n <= 10) (0 until n).toList() else ClipLoraConverter.blockOrder(n)
+
+        /** 書き終えた part を dest の名前にする（dest は置き換える）。Windows の JVM（テスト）では、マップが残っていて名前を変えられないことがあるので、写して消す */
+        internal fun moveInto(part: File, dest: File) {
+            dest.delete()
+            if (!part.renameTo(dest)) {
+                part.copyTo(dest, overwrite = true)
+                part.delete()
             }
-            return seq
         }
 
         /** Conv の重み [out, in]（どちらも 32 の倍数）を、adapter に入っている並びに置く（loraconverter の pack_conv と同じ）。 */
@@ -302,6 +326,27 @@ class LoraConverter(layoutJson: String, attachJson: String, windowsJson: String,
             return out
         }
 
+        /** packConv の逆（adapter の並びから [out, in] に戻す）。 */
+        fun unpackConv(p: ByteArray, outC: Int, inC: Int): ByteArray {
+            require(outC % 32 == 0 && inC % 32 == 0) { "チャネル数が 32 の倍数ではない: $outC x $inC" }
+            val nChunk = (outC + 255) / 256
+            val rowsOf = { l: Int -> minOf(256, outC - l * 256) }
+            val src = IntArray(nChunk)
+            var acc = 0
+            for (l in storedBlockOrder(nChunk)) { src[l] = acc; acc += rowsOf(l) * inC }
+            val q = ByteArray(outC * inC)
+            for (l in 0 until nChunk) {
+                val oc0 = l * 256
+                val rows = rowsOf(l)
+                var p0 = src[l]
+                for (ic in 0 until inC step 32) for (oc in 0 until rows step 32) for (cg in 0 until 32 step 4) for (r in 0 until 32) {
+                    val base = (oc0 + oc + r) * inC + ic + cg
+                    q[base] = p[p0++]; q[base + 1] = p[p0++]; q[base + 2] = p[p0++]; q[base + 3] = p[p0++]
+                }
+            }
+            return q
+        }
+
         fun rowSums(q: ByteArray, outC: Int, inC: Int): LongArray =
             LongArray(outC) { o -> var s = 0L; val b = o * inC; for (k in 0 until inC) s += q[b + k]; s }
 
@@ -318,7 +363,7 @@ class LoraConverter(layoutJson: String, attachJson: String, windowsJson: String,
 
         /** Civitai のファイル名などから、adapter の名前にできる文字列を作る。 */
         fun safeName(s: String): String {
-            val t = s.replace(Regex("[^A-Za-z0-9_.-]+"), "_").trim('_', '.', '-')
+            val t = s.replace(UNSAFE_NAME, "_").trim('_', '.', '-')
             return t.take(64).ifEmpty { "lora" }
         }
 

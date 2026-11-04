@@ -17,8 +17,8 @@ import java.nio.channels.FileChannel
  * 位置・大きさ・定数の部分は assets の clip_layout.json（loraconverter/data と同じもの）。0 で埋めたファイルに、定数と重みを書いて作る（ひな型は要らない）。
  */
 class ClipLoraConverter(layoutJson: String) {
-    private class Tensor(val node: String, val inC: Int, val outC: Int, val aOff: Long, val bOff: Long, val stem: String)
-    private class Spec(val size: Long, val tensors: List<Tensor>, val patch: List<Pair<Long, ByteArray>>)
+    internal class Tensor(val node: String, val inC: Int, val outC: Int, val aOff: Long, val bOff: Long, val stem: String)
+    internal class Spec(val size: Long, val tensors: List<Tensor>, val patch: List<Pair<Long, ByteArray>>)
 
     private val specs = LinkedHashMap<String, Spec>()
 
@@ -78,11 +78,46 @@ class ClipLoraConverter(layoutJson: String) {
                 }
                 buf.force()
             }
-            dest.delete()
-            if (!part.renameTo(dest)) { part.copyTo(dest, overwrite = true); part.delete() }   // JVM（テスト）では、マップが残って名前を変えられないことがある
+            LoraConverter.moveInto(part, dest)
             made += dest.name
         }
         return made
+    }
+
+    /** clip（"clip_l" か "clip_g"）の adapter の形（LoraMixer が使う）。 */
+    internal fun spec(clip: String): Spec = specs.getValue(clip)
+
+    /** adapter（buf）から、attach 点 t の A [in, 64] と B [64, out]（行優先の float）を読み戻す。buf の位置を動かす。 */
+    internal fun readAB(buf: java.nio.ByteBuffer, t: Tensor): Pair<FloatArray, FloatArray> {
+        fun read(off: Long, k: Int, n: Int): FloatArray {
+            val b = ByteArray(k * n * 2)
+            buf.position(off.toInt())
+            buf.get(b)
+            return unpackFp16(b, k, n)
+        }
+        return read(t.aOff, t.inC, MAX_RANK) to read(t.bOff, MAX_RANK, t.outC)
+    }
+
+    /**
+     * clip の adapter を dest に作る（定数の部分と、fill が返す A [in, 64]・B [64, out]。null の attach 点は 0 のまま）。
+     * 途中の出力は .part に書き、全部できてから名前を変える。
+     */
+    internal fun writeAdapter(clip: String, dest: File, fill: (Int, Tensor) -> Pair<FloatArray, FloatArray>?) {
+        val spec = specs.getValue(clip)
+        val part = File(dest.parentFile, dest.name + ".part")
+        RandomAccessFile(part, "rw").use { raf ->
+            raf.setLength(0)
+            raf.setLength(spec.size)
+            val buf = raf.channel.map(FileChannel.MapMode.READ_WRITE, 0, spec.size).also { it.order(ByteOrder.LITTLE_ENDIAN) }
+            for ((off, bytes) in spec.patch) put(buf, off, bytes)
+            for ((i, t) in spec.tensors.withIndex()) {
+                val (a, b) = fill(i, t) ?: continue
+                put(buf, t.aOff, packFp16(a, t.inC, MAX_RANK))
+                put(buf, t.bOff, packFp16(b, MAX_RANK, t.outC))
+            }
+            buf.force()
+        }
+        LoraConverter.moveInto(part, dest)
     }
 
     /** attach 点 → LoRA のキーの基底（lora_te1_… の .alpha を除いたもの）。無い層は入らない。グラフに出ない層（CLIP-L の最終層）は読み飛ばす。 */
@@ -145,6 +180,27 @@ class ClipLoraConverter(layoutJson: String) {
                 }
             }
             return out
+        }
+
+        /** packFp16 の逆（adapter の並びの FP16 から [K, N] の float に戻す）。 */
+        fun unpackFp16(p: ByteArray, k: Int, n: Int): FloatArray {
+            require(k % 2 == 0 && n % 32 == 0 && p.size == k * n * 2) { "形が合わない: $k x $n" }
+            val nChunk = (n + 255) / 256
+            val width = { l: Int -> minOf(256, n - l * 256) }
+            val src = IntArray(nChunk)
+            var acc = 0
+            for (l in blockOrder(nChunk)) { src[l] = acc; acc += k * width(l) * 2 }
+            val m = FloatArray(k * n)
+            for (l in 0 until nChunk) {
+                val c0 = l * 256
+                var q = src[l]
+                for (t in 0 until width(l) / 32) for (kp in 0 until k / 2) for (n32 in 0 until 32) for (k2 in 0 until 2) {
+                    val h = (p[q].toInt() and 0xFF) or ((p[q + 1].toInt() and 0xFF) shl 8)
+                    q += 2
+                    m[(2 * kp + k2) * n + c0 + t * 32 + n32] = Safetensors.halfToFloat(h)
+                }
+            }
+            return m
         }
 
         /** float32 → float16 のビット列（最近接偶数への丸め。numpy の astype(float16) と同じ。大きすぎる値は inf）。 */

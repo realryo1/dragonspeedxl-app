@@ -1,11 +1,14 @@
 package com.dragonspeedxl.app
 
 import android.Manifest
+import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
 import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -86,10 +89,40 @@ class MainActivity : FragmentActivity() {   // BiometricPrompt のため Fragmen
             val cb = onFilePicked
             onFilePicked = null
             cb?.invoke(if (resultCode == RESULT_OK) data?.data else null)
+        } else if (requestCode == REQUEST_TAKE_PHOTO) {
+            pickingFile = false
+            val cb = onPhotoTaken
+            onPhotoTaken = null
+            cb?.invoke(resultCode == RESULT_OK)
+        }
+    }
+
+    private var onPhotoTaken: ((Boolean) -> Unit)? = null
+
+    /**
+     * 端末のカメラアプリで写真を 1 枚撮らせ、output（FileProvider の Uri）に書かせる。結果（撮れたか）を callback に渡す。QR の読み取りに使う。
+     * アプリ自身はカメラの権限を持たない（ACTION_IMAGE_CAPTURE は、CAMERA 権限を宣言していなければ、許可なしで使える）。
+     * カメラアプリへ出ているあいだは、pickFile と同じくロックしない。カメラアプリが無ければ false を返し、callback は呼ばない。
+     */
+    fun takePhoto(output: Uri, callback: (Boolean) -> Unit): Boolean {
+        val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+            .putExtra(MediaStore.EXTRA_OUTPUT, output)
+            .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        intent.clipData = ClipData.newRawUri("", output)   // カメラアプリに、output への書き込みの許可を確実に渡す
+        onPhotoTaken = callback
+        pickingFile = true
+        return try {
+            startActivityForResult(intent, REQUEST_TAKE_PHOTO)
+            true
+        } catch (_: ActivityNotFoundException) {
+            onPhotoTaken = null
+            pickingFile = false
+            false
         }
     }
 
     companion object {
+        private const val REQUEST_TAKE_PHOTO = 0x5150   // 16 bit に収まる小さい値
         private const val REQUEST_PICK_FILE = 0x4c52   // 16 bit に収まる小さい値
         private const val REQUEST_CREATE_FILE = 0x4c53
         private const val REQUEST_NOTIFY = 0x4e54

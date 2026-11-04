@@ -29,8 +29,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
@@ -44,7 +42,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -75,6 +72,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -162,8 +160,9 @@ private fun Header(vm: MainViewModel) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// LoRA の選択（SSXL の loraPicker に揃える: 折りたたみの見出し「▸ LoRA」・選んだ LoRA のチップ・固定の DMD、開くと検索つきの一覧）。LoRA は 1 つだけ。
-// 縦横どちらでも使える。選んだ LoRA の強さ w（既定 1.0）はスライダー。
+// LoRA の選択（SSXL の loraPicker に揃える: 折りたたみの見出し「▸ LoRA」・選んだ LoRA・固定の DMD、開くと検索つきの一覧）。
+// いくつでも選べる（SSXL のチェックボックスと同じ。ComfyUI の LoraLoader を重ねるのと同じく足し算）。縦横どちらでも使える。
+// 選んだ LoRA ごとの強さ w（既定 1.0）はスライダー。2 つ以上は、生成の前に端末で 1 つの adapter に合成する（MainViewModel.resolveLora）。
 @Composable
 private fun LoraPicker(vm: MainViewModel) {
     var open by remember { mutableStateOf(false) }
@@ -171,7 +170,9 @@ private fun LoraPicker(vm: MainViewModel) {
     var adding by remember { mutableStateOf(false) }   // 「LoRA を追加」のダイアログ
     val usable = vm.loraReady
     val clipboard = LocalClipboardManager.current
-    val activation = if (vm.loraName.isEmpty()) "" else vm.loraActivation(vm.loraName)   // 選んだ LoRA の activation text（トリガーの文）
+    val selected = vm.loraSelection
+    // 選んだ LoRA の activation text（トリガーの文）を、選んだ順に「, 」でつないだもの
+    val activation = selected.map { vm.loraActivation(it.name) }.filter { it.isNotEmpty() }.joinToString(", ")
     if (adding) LoraAddDialog(vm) { adding = false; vm.refreshLoras() }
     CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
         // 背景は塗らない（プロンプト欄などと同じ。輪郭線だけ）
@@ -185,19 +186,20 @@ private fun LoraPicker(vm: MainViewModel) {
                 ) {
                     Icon(if (open) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown, contentDescription = if (open) "LoRA の一覧を閉じる" else "LoRA の一覧を開く", modifier = Modifier.size(20.dp))
                     Text("LoRA", style = MaterialTheme.typography.titleSmall)
-                    if (vm.loraName.isNotEmpty()) {
+                    if (selected.isNotEmpty()) {
                         // 選んだ LoRA（UNet が無いときは薄く出す）
                         Text(
-                            "${vm.loraName} ×${"%.1f".format(vm.loraStrength)}",
+                            selected.joinToString(" + ") { "${it.name} ×${"%.1f".format(it.strength)}" },
                             style = MaterialTheme.typography.labelLarge,
                             color = if (usable) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false),
                         )
                         // 選んだ LoRA の activation text をコピー（プロンプトに貼れる）
                         if (activation.isNotEmpty()) {
                             IconButton(onClick = { clipboard.setText(AnnotatedString(activation)) }, modifier = Modifier.size(32.dp)) {
-                                Icon(Icons.Filled.ContentCopy, contentDescription = "${vm.loraName} のプロンプト（activation text）をコピー", modifier = Modifier.size(18.dp))
+                                Icon(AppIcons.ContentCopy, contentDescription = "選んだ LoRA のプロンプト（activation text）をコピー", modifier = Modifier.size(18.dp))
                             }
                         }
                     }
@@ -214,8 +216,12 @@ private fun LoraPicker(vm: MainViewModel) {
                         if (!vm.loraReady) {
                             Text("UNet（unet_lora_4g.bin と unet_lora_4g_default.bin）が models/ にありません。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                         }
-                        // 追加（変換）は生成中に走らせない（LoRA の取り込みは busy のときに拒否する）
-                        TextButton(onClick = { adding = true }, enabled = !vm.busy) { Text("＋ LoRA を追加") }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // 追加（変換）は生成中に走らせない（LoRA の取り込みは busy のときに拒否する）
+                            TextButton(onClick = { vm.clearLoraImportMessage(); adding = true }, enabled = !vm.busy) { Text("＋ LoRA を追加") }
+                            Spacer(Modifier.weight(1f))
+                            if (selected.isNotEmpty()) TextButton(onClick = { vm.clearLoras() }) { Text("すべて外す") }
+                        }
                         if (vm.loraNames.isEmpty()) {
                             Text("models/loras/ に LoRA（<名前>.4g.bin）を置くか、上のボタンで追加すると選べます。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         } else {
@@ -223,24 +229,32 @@ private fun LoraPicker(vm: MainViewModel) {
                             val shown = vm.loraNames.filter { query.isBlank() || it.contains(query.trim(), ignoreCase = true) }
                             // 一覧は 4 行ぶんの高さで、超えた分は中でスクロール（タグ補完と同じ）。LoraRow は 40dp
                             Column(Modifier.fillMaxWidth().heightIn(max = 40.dp * 4).verticalScroll(rememberScrollState())) {
-                                LoraRow("なし（LoRA を使わない）", vm.loraName.isEmpty(), true, null) { vm.updateLoraName("") }
                                 shown.forEach { n ->
                                     val act = vm.loraActivation(n)
-                                    LoraRow(n, vm.loraName == n, usable, if (act.isEmpty()) null else ({ clipboard.setText(AnnotatedString(act)) })) { vm.updateLoraName(n) }
+                                    LoraRow(n, selected.any { it.name == n }, usable, if (act.isEmpty()) null else ({ clipboard.setText(AnnotatedString(act)) })) { vm.toggleLora(n) }
                                 }
                             }
                             if (shown.isEmpty()) Text("該当する LoRA がありません。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            if (vm.loraName.isNotEmpty()) {
+                            // 選んだ LoRA ごとの強さ（選んだ順）
+                            selected.forEach { u ->
                                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("強さ ${"%.1f".format(vm.loraStrength)}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.width(72.dp))
+                                    Text(u.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(112.dp))
+                                    Text("%.1f".format(u.strength), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.width(28.dp))
                                     Slider(
-                                        value = vm.loraStrength,
-                                        onValueChange = { vm.updateLoraStrength((it * 10).roundToInt() / 10f) },
+                                        value = u.strength,
+                                        onValueChange = { vm.updateLoraStrength(u.name, (it * 10).roundToInt() / 10f) },
                                         valueRange = 0f..2f,
                                         steps = 19,
                                         modifier = Modifier.weight(1f),
                                     )
                                 }
+                            }
+                            if (selected.count { it.strength != 0f } >= 2) {
+                                Text(
+                                    "2 つ以上は、生成の前に 1 つに合成します（組み合わせや強さを変えた最初の 1 回は、数十秒かかります）。rank の合計が 64 を超えると、上位 64 成分に近似します。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                         }
                     }
@@ -250,19 +264,19 @@ private fun LoraPicker(vm: MainViewModel) {
     }
 }
 
-/** LoRA の一覧の 1 行（ラジオ。1 つだけ選べる）。onCopy があれば、末尾にその LoRA の activation text をコピーするボタンを出す（選べない状態でも押せる）。 */
+/** LoRA の一覧の 1 行（チェックボックス。いくつでも選べる）。onCopy があれば、末尾にその LoRA の activation text をコピーするボタンを出す（選べない状態でも押せる）。 */
 @Composable
-private fun LoraRow(label: String, selected: Boolean, enabled: Boolean, onCopy: (() -> Unit)?, onSelect: () -> Unit) {
+private fun LoraRow(label: String, selected: Boolean, enabled: Boolean, onCopy: (() -> Unit)?, onToggle: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().height(40.dp).clip(AppShape).clickable(enabled = enabled, onClick = onSelect),
+        Modifier.fillMaxWidth().height(40.dp).clip(AppShape).clickable(enabled = enabled, onClick = onToggle),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        RadioButton(selected = selected, onClick = null, enabled = enabled, modifier = Modifier.padding(start = 4.dp))
+        Checkbox(checked = selected, onCheckedChange = null, enabled = enabled, modifier = Modifier.padding(start = 4.dp))
         Text(label, style = MaterialTheme.typography.bodyMedium, maxLines = 1, color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f), modifier = Modifier.weight(1f))
         if (onCopy != null) {
             IconButton(onClick = onCopy, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.Filled.ContentCopy, contentDescription = "$label のプロンプト（activation text）をコピー", modifier = Modifier.size(18.dp))
+                Icon(AppIcons.ContentCopy, contentDescription = "$label のプロンプト（activation text）をコピー", modifier = Modifier.size(18.dp))
             }
         }
     }
@@ -283,7 +297,6 @@ private fun GenBar(vm: MainViewModel) {
                         selected = vm.orientation == o,
                         onClick = { vm.orientation = o },
                         label = { Text(o.label, maxLines = 1, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) },
-                        enabled = !vm.busy,
                         modifier = Modifier.weight(1f).height(40.dp),
                     )
                 }
@@ -298,12 +311,13 @@ private fun GenBar(vm: MainViewModel) {
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ClearableField(vm.seed, { vm.seed = it }, "seed（ランダム）", KeyboardType.Number, !vm.busy, Modifier.weight(1f))
-            ClearableField(vm.hiresDenoise, { vm.hiresDenoise = it }, "denoise（0.39）", KeyboardType.Decimal, !vm.busy, Modifier.weight(1f))
+            // 生成中も変えられる（走っているジョブは開始時の値で動くので、次の生成に向けて書き換えるだけ）
+            ClearableField(vm.seed, { vm.seed = it }, "seed（ランダム）", KeyboardType.Number, true, Modifier.weight(1f))
+            ClearableField(vm.hiresDenoise, { vm.hiresDenoise = it }, "denoise（0.39）", KeyboardType.Decimal, true, Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ClearableField(vm.baseSteps, { vm.baseSteps = it }, "base steps（2）", KeyboardType.Number, !vm.busy, Modifier.weight(1f))
-            ClearableField(vm.hiresSteps, { vm.hiresSteps = it }, "hires steps（4）", KeyboardType.Number, !vm.busy && vm.hiresAvailable, Modifier.weight(1f))
+            ClearableField(vm.baseSteps, { vm.baseSteps = it }, "base steps（2）", KeyboardType.Number, true, Modifier.weight(1f))
+            ClearableField(vm.hiresSteps, { vm.hiresSteps = it }, "hires steps（4）", KeyboardType.Number, vm.hiresAvailable, Modifier.weight(1f))
         }
         if (!vm.hiresAvailable) {
             Text("UNet（unet_lora_4g.bin）が未配置のため生成できません", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -409,8 +423,8 @@ private fun Viewer(vm: MainViewModel) {
     val clipboard = LocalClipboardManager.current
     var fullscreen by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        // 生成中の途中経過（TAESD）は、今選んでいる向きの絵。無ければ表示中のジョブの向き
-        val o = if (vm.livePreview != null) vm.orientation else item?.orientation ?: vm.orientation
+        // 生成中の途中経過（TAESD）は、それを作っているジョブの向きの絵（次の生成の向きを変えても枠は動かさない）。無ければ表示中のジョブの向き
+        val o = if (vm.livePreview != null) vm.previewOrientation else item?.orientation ?: vm.orientation
         // 画像は画面の左右いっぱい（外側の余白を打ち消す）。縦向きだけは細くする
         Box(
             Modifier
@@ -455,7 +469,7 @@ private fun Viewer(vm: MainViewModel) {
                 OutlinedButton(shape = AppShape, onClick = { clipboard.setText(AnnotatedString(vm.prompt)) }, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("コピー") }
                 OutlinedButton(shape = AppShape, onClick = { vm.useAsBase() }, enabled = item != null && !vm.busy, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("↙流用") }
                 IconButton(onClick = { vm.saveToGallery() }, enabled = vm.previewBitmap != null && !vm.busy) {
-                    Icon(Icons.Filled.Download, contentDescription = "ギャラリーに保存")
+                    Icon(AppIcons.Download, contentDescription = "ギャラリーに保存")
                 }
             }
         }

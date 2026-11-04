@@ -1,7 +1,5 @@
 #include "engine/preview.h"
 
-#include <sys/stat.h>
-
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -9,9 +7,10 @@
 
 #include <android/log.h>
 
+#include "engine/util.h"
+
 namespace dsxl {
 namespace {
-bool Exists(const std::string& p) { struct stat st{}; return stat(p.c_str(), &st) == 0; }
 const char* kTag = "dsxl-preview";
 std::string StemOf(const std::string& dir, int lh, int lw) { return dir + "/gpu/taesd_" + std::to_string(lh) + "x" + std::to_string(lw); }
 }  // namespace
@@ -58,7 +57,7 @@ void Previewer::DropModels() {
 
 bool Previewer::HasFiles(int lh, int lw) const {
     const std::string stem = StemOf(dir_, lh, lw);
-    return Exists(stem + "_gpu.bin") || Exists(stem + "_fp32.dlc");
+    return FileExists(stem + "_gpu.bin") || FileExists(stem + "_fp32.dlc");
 }
 
 std::shared_ptr<QnnModel> Previewer::Model(int lh, int lw, std::string* err) {
@@ -70,12 +69,12 @@ std::shared_ptr<QnnModel> Previewer::Model(int lh, int lw, std::string* err) {
     const std::string dlc = stem + "_fp32.dlc", bin = stem + "_gpu.bin";
     std::shared_ptr<QnnModel> m;
     std::string e;
-    if (Exists(bin)) {
+    if (FileExists(bin)) {
         auto t = std::make_shared<QnnModel>();
         if (t->Load(lib_, bin, &e)) m = std::move(t);
         else std::remove(bin.c_str());   // 壊れた・古いキャッシュは作り直す
     }
-    if (!m && Exists(dlc)) {
+    if (!m && FileExists(dlc)) {
         const auto t0 = std::chrono::steady_clock::now();
         auto t = std::make_shared<QnnModel>();
         if (lib_->BuildGpuContextBinary(dlc, bin, &e) && t->Load(lib_, bin, &e)) {

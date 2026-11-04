@@ -25,7 +25,7 @@ object PngInfo {
         // LoRA の強さは A1111 の weight（w）。係数 c は、端末の内部の alpha にだけ掛ける値なので入れない。
         val loras = buildString {
             append(" <lora:$FIXED_LORA:1>")
-            if (item.lora.isNotEmpty()) append(" <lora:${item.lora}:${num(item.loraStrength.toDouble())}>")
+            for (u in item.loras) append(" <lora:${u.name}:${num(u.strength.toDouble())}>")   // 多重適用は、使った順に並べる（A1111 も足し算）
         }
         val params = buildList {
             add("Steps: ${item.baseSteps}")

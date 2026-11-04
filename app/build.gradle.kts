@@ -20,7 +20,9 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
-                arguments += listOf("-DANDROID_STL=c++_shared")
+                // C++ を使う .so は libdsxl_native.so だけ（QNN の .so は libc++ に依存しない）なので、静的に入れる。
+                // libc++_shared.so（約 1.4MB）を APK に入れず、使う部分だけがリンクされる
+                arguments += listOf("-DANDROID_STL=c++_static")
             }
         }
     }
@@ -47,7 +49,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 で使っていないクラスとリソースを除く。名前は変えない（JNI・エラー文のクラス名・履歴の enum 名がそのまま残る。proguard-rules.pro）
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // 本体（デバッグ版の com.dragonspeedxl.app）と別アプリとして入る。データは別々（モデルも履歴も別）。
             applicationIdSuffix = ".release"
             signingConfig = if (System.getenv("DSXL_KEYSTORE") != null) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
@@ -86,10 +91,11 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
+    // アイコンは core の分だけ使う。extended（dex で約 30MB）にしか無い 2 つは ui/AppIcons.kt に写した
+    implementation("androidx.compose.material:material-icons-core")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("com.google.zxing:core:3.5.3")   // QR の復号（LoRA の Civitai URL の読み取り）。純 Java で軽い。カメラは Camera2 で直接使う
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")   // JVM のテストでは Android の org.json が使えないので、本物を入れる

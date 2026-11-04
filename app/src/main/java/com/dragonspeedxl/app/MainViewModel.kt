@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -16,6 +17,7 @@ import com.dragonspeedxl.app.download.DownloadService
 import com.dragonspeedxl.app.download.DownloadStatus
 import com.dragonspeedxl.app.download.ModelDownloader
 import com.dragonspeedxl.app.download.ModelManifest
+import com.dragonspeedxl.app.download.toHex
 import com.dragonspeedxl.app.engine.DeviceMetrics
 import com.dragonspeedxl.app.engine.GenerationEngine
 import com.dragonspeedxl.app.engine.GenerationRequest
@@ -28,6 +30,9 @@ import com.dragonspeedxl.app.engine.PendingGeneration
 import com.dragonspeedxl.app.engine.Progress
 import com.dragonspeedxl.app.engine.RootMetrics
 import com.dragonspeedxl.app.engine.Stage
+import com.dragonspeedxl.app.lora.LoraConverter
+import com.dragonspeedxl.app.lora.LoraMixer
+import com.dragonspeedxl.app.lora.LoraUse
 import com.dragonspeedxl.app.prompt.DanbooruClient
 import com.dragonspeedxl.app.prompt.PromptChip
 import com.dragonspeedxl.app.prompt.PromptChips
@@ -36,6 +41,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -340,6 +346,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             Stage.HIRES_UNET -> "Hires sampling$n"
             Stage.VAE -> "VAE$n"
             Stage.LOAD -> "モデルをロード中$n"
+            Stage.MIX -> "LoRA を合成中 ${p.step}%"
         }
     }
 
@@ -468,21 +475,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 保存してあるオンのまま、TAESD が無くて使えないとき（生成は VAE で動く）。設定の表示と生成画面の案内に使う。 */
     val previewBlocked: Boolean get() = taesdMissingFile != null && (previewTaesd || draftMode)
 
-    /** 高速デコードが実際に有効か（オンで、TAESD が揃っている）。GPU 使用率の上限の欄を出すかの判定に使う。 */
-    val draftActive: Boolean get() = draftMode && taesdMissingFile == null
-
     // ---- LoRA。UNet は LoRA の有無によらず同じ共有 bin（unet_lora_4g.bin）。LoRA ごとの super adapter は models/loras/<名前>.4g.bin（縦横・Hires 共通）----
     /** models/loras/ にある LoRA の名前（<名前>.4g.bin）。LoRA の欄を開くたびに読み直す。 */
     var loraNames by mutableStateOf(listLoras())
         private set
-    /** 使う LoRA（空なら使わない）。起動のたびに「なし」から始める（前回の選択は覚えない）。 */
-    var loraName by mutableStateOf("")
+    /**
+     * 使う LoRA と強さ w（選んだ順。空なら使わない）。いくつでも選べる（多重適用。ComfyUI の LoraLoader を重ねるのと同じく、重みの差分を足す）。
+     * 強さ w は A1111 の <lora:名前:w> の w と同じ意味（既定 1.0。UNet と CLIP に同じ w）。起動のたびに「なし」から始める（前回の選択は覚えない）。
+     * 2 つ以上のときは、生成の直前に adapter を 1 つに合成する（lora/LoraMixer.kt。組み合わせと強さごとに loras/mix/ に作って使い回す）。
+     */
+    var loraSelection by mutableStateOf<List<LoraUse>>(emptyList())
         private set
     /** UNet（共有 bin）が置かれているか。LoRA もこれで動く。 */
     var loraReady by mutableStateOf(checkLoraReady())
-        private set
-    /** 強さ w（A1111 の <lora:名前:w> の w と同じ意味。既定 1.0）。実行時の alpha 入力は w × c（c は loras/<名前>.json の "c"。無ければ 1）。 */
-    var loraStrength by mutableStateOf(prefs.getFloat("loraStrength", 1.0f))
         private set
 
     private fun lorasDir() = File(native.modelDir, "loras")
@@ -494,16 +499,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshLoras() {
         loraNames = listLoras()
         loraReady = checkLoraReady()
-        if (loraName.isNotEmpty() && loraName !in loraNames) updateLoraName("")   // 選んでいた LoRA のファイルが消えた
+        loraSelection = loraSelection.filter { it.name in loraNames }   // 選んでいた LoRA のファイルが消えた
     }
 
-    fun updateLoraName(name: String) {
-        loraName = name
+    /** LoRA を選ぶ・外す（チェックボックス）。選ぶときの強さは 1.0。 */
+    fun toggleLora(name: String) {
+        loraSelection = if (loraSelection.any { it.name == name }) loraSelection.filter { it.name != name } else loraSelection + LoraUse(name, 1.0f)
     }
 
-    fun updateLoraStrength(w: Float) {
-        loraStrength = w
-        prefs.edit().putFloat("loraStrength", w).apply()
+    fun clearLoras() {
+        loraSelection = emptyList()
+    }
+
+    fun updateLoraStrength(name: String, w: Float) {
+        loraSelection = loraSelection.map { if (it.name == name) it.copy(strength = w) else it }
     }
 
     // ---- LoRA の追加（Civitai の URL から取って、端末の中で super adapter に変換する。変換は lora/LoraConverter.kt）----
@@ -518,6 +527,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var loraImportMessage by mutableStateOf("")
     var loraImportProgress by mutableStateOf(0f)
     var loraImportFailed by mutableStateOf(false)
+    /** 取り込みに成功するたびに 1 増える。LoRA 追加のダイアログは、これが変わったら入力欄を空に戻す（同じ入力での二重の追加を防ぐ）。 */
+    var loraImportedCount by mutableStateOf(0)
+        private set
+
+    /** ダイアログを開くとき、前回の結果（メッセージ・失敗の印）を消す。 */
+    fun clearLoraImportMessage() {
+        loraImportMessage = ""
+        loraImportFailed = false
+        loraImportProgress = 0f
+    }
     /** ひな型が置かれているか。無ければ、足りないファイル名を返す。 */
     fun missingLoraTemplate(): String? =
         com.dragonspeedxl.app.lora.LoraConverter.DEFAULT_ADAPTER.takeIf { !File(native.modelDir, it).isFile }
@@ -559,14 +578,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val outcome = withContext(Dispatchers.IO) {
-                    val assets = getApplication<Application>().assets
-                    val converter = com.dragonspeedxl.app.lora.LoraConverter(
-                        assets.open("layout.json").bufferedReader().use { it.readText() },
-                        assets.open("attach_map.json").bufferedReader().use { it.readText() },
-                        assets.open("super_4g_windows.json").bufferedReader().use { it.readText() },
-                        assets.open("clip_layout.json").bufferedReader().use { it.readText() },
-                    )
-                    run(converter, File(getApplication<Application>().cacheDir, "lora_download")) { msg, f ->
+                    run(newConverter(), File(getApplication<Application>().cacheDir, "lora_download")) { msg, f ->
                         loraImportMessage = msg
                         loraImportProgress = f
                         DownloadStatus.update(LORA_TITLE, msg, f)
@@ -576,6 +588,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 loraImportProgress = 1f
                 loraImportMessage = "「${outcome.name}」を追加しました（はみ出し ${"%.4f".format(outcome.result.overRatio * 100)}%）。" +
                     if (outcome.activation.isEmpty()) "" else "\nactivation text: ${outcome.activation}"
+                loraImportedCount++
                 DownloadStatus.finish(LORA_TITLE, "「${outcome.name}」を追加しました", failed = false)
             } catch (e: CancellationException) {
                 DownloadStatus.finish(LORA_TITLE, "中断しました", failed = true)
@@ -590,23 +603,94 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 変換・合成の道具（形の表は APK の assets。loraconverter/data と同じもの）。重いので IO のスレッドで作る。 */
+    private fun newConverter(): LoraConverter {
+        val assets = getApplication<Application>().assets
+        fun read(n: String) = assets.open(n).bufferedReader().use { it.readText() }
+        return LoraConverter(read("layout.json"), read("attach_map.json"), read("super_4g_windows.json"), read("clip_layout.json"))
+    }
+
     /** この LoRA の係数 c（none モードで B を c で割って焼いてあるので、実行時に掛け戻す）。loras/<名前>.json の {"c": 1.518}。無ければ 1。 */
     private fun loraCoefficient(name: String): Float = try {
         val t = File(lorasDir(), "$name.json").readText()
         Regex("\"c\"\\s*:\\s*([0-9.eE+-]+)").find(t)?.groupValues?.get(1)?.toFloat() ?: 1f
     } catch (_: Exception) { 1f }
 
-    /** この LoRA の activation text（トリガーの文。loras/<名前>.json の "activation"）。無ければ空。LoRA 欄の [コピー] でクリップボードに入れる。 */
-    fun loraActivation(name: String): String = try {
-        org.json.JSONObject(File(lorasDir(), "$name.json").readText()).optString("activation", "")
-    } catch (_: Exception) { "" }
+    /** 生成に使う LoRA: 選んだもののうち、adapter があって強さが 0 でないもの（選んだ順）。UNet が無ければ空。 */
+    private fun activeLoras(): List<LoraUse> =
+        if (!checkLoraReady()) emptyList() else loraSelection.filter { it.strength != 0f && File(lorasDir(), it.name + LORA_SUFFIX).isFile }
 
-    /** 今の設定で LoRA を使えるか: 選んでいて、UNet と adapter（<名前>.4g.bin）がある。縦横どちらでも使える。 */
-    private fun activeLora(): String =
-        if (loraName.isNotEmpty() && checkLoraReady() && File(lorasDir(), loraName + LORA_SUFFIX).exists()) loraName else ""
+    /**
+     * req.loras から、エンジンに渡す adapter と alpha を決める（IO のスレッドで呼ぶ）。
+     * 1 つなら、その LoRA の adapter（alpha = w × c、CLIP は w）。2 つ以上なら、合成した adapter（loras/mix/<鍵>。alpha = 合成の係数 C、CLIP は 1）。
+     * 合成した adapter が無ければ作る（数十秒。進捗は Stage.MIX）。鍵は、名前・強さ・各 adapter のファイルの大きさと時刻から決める。
+     */
+    private fun resolveLora(req: GenerationRequest, cancelled: () -> Boolean): GenerationRequest {
+        val uses = req.loras
+        if (uses.isEmpty()) return req.copy(lora = "", loraAlpha = 0f, loraTeAlpha = 0f)
+        if (uses.size == 1) {
+            val u = uses[0]
+            return req.copy(lora = u.name, loraAlpha = u.strength * loraCoefficient(u.name), loraTeAlpha = u.strength)
+        }
+        val sorted = uses.sortedBy { it.name }   // 順によらず同じ鍵・同じ中身にする（足し算なので順は効かない）
+        val key = mixKey(sorted)
+        val dir = File(lorasDir(), MIX_DIR)
+        val meta = File(dir, "$key.json")
+        if (meta.isFile && File(dir, key + LORA_SUFFIX).isFile) {
+            meta.setLastModified(System.currentTimeMillis())   // 最近使ったものとして残す
+        } else {
+            pruneMixes(dir, keep = MIX_KEEP - 1)
+            onProgress(Progress(Stage.MIX, 0, 100))
+            val parts = sorted.map { LoraMixer.Part(it.name, it.strength, loraCoefficient(it.name).toDouble()) }
+            val r = LoraMixer(newConverter()).mix(parts, lorasDir(), native.modelDir, dir, key,
+                progress = { f -> onProgress(Progress(Stage.MIX, (f * 100).toInt().coerceIn(0, 100), 100)) }, cancelled = cancelled)
+            android.util.Log.i("dsxl-lora", "mix $key: c=${r.c} truncated=${r.truncated}/${r.tensors} over=${r.overRatio} clip=${r.clipFiles}")
+        }
+        val c = org.json.JSONObject(meta.readText()).getDouble("c").toFloat()
+        return req.copy(lora = "$MIX_DIR/$key", loraAlpha = c, loraTeAlpha = 1f)
+    }
+
+    /** 合成の鍵（16 進 16 桁）。名前・強さ・各 adapter（UNet と CLIP）のファイルの大きさと時刻。合成の作り方を変えたら版（v1）を上げる。 */
+    private fun mixKey(uses: List<LoraUse>): String {
+        val s = buildString {
+            append("v1")
+            for (u in uses) {
+                append('|').append(u.name).append(':').append("%.3f".format(java.util.Locale.US, u.strength))
+                for (suffix in listOf(LORA_SUFFIX, ".clip_l.bin", ".clip_g.bin")) {
+                    val f = File(lorasDir(), u.name + suffix)
+                    append(':').append(if (f.isFile) "${f.length()}@${f.lastModified()}" else "-")
+                }
+            }
+        }
+        return java.security.MessageDigest.getInstance("SHA-1").digest(s.toByteArray()).toHex().take(16)
+    }
+
+    /** loras/mix/ の合成した adapter を、最近使った keep 組だけ残して消す（1 組 約 310MB）。作りかけ（.json の無いもの）も消す。 */
+    private fun pruneMixes(dir: File, keep: Int) {
+        val files = dir.listFiles() ?: return
+        val recent = files.filter { it.name.endsWith(".json") }.sortedByDescending { it.lastModified() }.take(keep).map { it.name.removeSuffix(".json") }.toSet()
+        for (f in files) if (f.name.substringBefore('.') !in recent) f.delete()
+    }
+
+    /** loraActivation の覚え（名前 → ファイルの時刻・大きさと、読んだ値）。LoRA 欄は画面の更新のたびに呼ぶので、ファイルが変わったときだけ読み直す。 */
+    private val activationCache = HashMap<String, Triple<Long, Long, String>>()
+
+    /** この LoRA の activation text（トリガーの文。loras/<名前>.json の "activation"）。無ければ空。LoRA 欄の [コピー] でクリップボードに入れる。 */
+    fun loraActivation(name: String): String {
+        val f = File(lorasDir(), "$name.json")
+        val modified = f.lastModified()
+        val length = f.length()
+        activationCache[name]?.let { (m, l, v) -> if (m == modified && l == length) return v }
+        val v = try { org.json.JSONObject(f.readText()).optString("activation", "") } catch (_: Exception) { "" }
+        activationCache[name] = Triple(modified, length, v)
+        return v
+    }
 
     /** 生成中の途中経過の絵（TAESD）。最終画像が出る・失敗する・キャンセルすると消える。 */
     var livePreview by mutableStateOf<Bitmap?>(null)
+        private set
+    /** 途中経過の絵を作っているジョブの向き。選択中の向き（orientation）は次の生成の向きなので、絵の枠はこちらで決める。 */
+    var previewOrientation by mutableStateOf(Orientation.PORTRAIT)
         private set
     private var previewEpoch = 0   // ジョブごとに増やす。遅れて届いた前のジョブのプレビューを捨てるため
 
@@ -684,24 +768,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun searchText(it: HistoryItem) = "${it.prompt} ${it.jobId} ${it.seed} ${it.kind}".lowercase()
 
-    private fun isBlacklisted(it: HistoryItem): Boolean {
-        val words = imageBlacklistTags.split(Regex("[,\\s]+")).map { w -> w.trim().lowercase() }.filter { w -> w.isNotEmpty() }
-        if (words.isEmpty()) return false
-        val text = searchText(it)
-        return words.any { w -> text.contains(w) }
-    }
-
-    /** 検索語（"-語句" は除外）と「除外」を適用した履歴。 */
-    val filteredHistory: List<HistoryItem>
-        get() {
-            val terms = historySearch.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
-            val include = terms.filter { !it.startsWith("-") }
-            val exclude = terms.filter { it.startsWith("-") && it.length > 1 }.map { it.drop(1) }
-            return history.filter { h ->
-                val t = searchText(h)
-                !(blurBlacklist && isBlacklisted(h)) && include.all { t.contains(it) } && exclude.none { t.contains(it) }
-            }
+    /**
+     * 検索語（"-語句" は除外）と「除外」を適用した履歴。履歴・検索語・除外の設定が変わったときだけ作り直す
+     * （画面の更新のたびに、全件の照合と除外ワードの分解をやり直さない）。
+     */
+    val filteredHistory: List<HistoryItem> by derivedStateOf {
+        val terms = historySearch.trim().lowercase().split(SPACES).filter { it.isNotEmpty() }
+        val include = terms.filter { !it.startsWith("-") }
+        val exclude = terms.filter { it.startsWith("-") && it.length > 1 }.map { it.drop(1) }
+        val blocked = if (blurBlacklist) imageBlacklistTags.split(BLACKLIST_SEPARATORS).map { w -> w.trim().lowercase() }.filter { w -> w.isNotEmpty() } else emptyList()
+        history.filter { h ->
+            val t = searchText(h)
+            blocked.none { t.contains(it) } && include.all { t.contains(it) } && exclude.none { t.contains(it) }
         }
+    }
 
     val historyPageCount: Int get() = max(1, (filteredHistory.size + historyPageSize - 1) / historyPageSize)
 
@@ -780,18 +860,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (busy) return
         pushPromptUndo(prompt.trim())   // 「戻る」で、生成に使ったプロンプトへ戻れるようにする
         val s = seed.trim().toLongOrNull() ?: Random.nextLong(0, 4_294_967_295L)
-        val lora = activeLora()   // 空なら LoRA なし（エンジンが default の adapter を使う）
         val hires = hiresStepsValue > 0 && hiresAvailable
+        // LoRA は空なら無し（エンジンが default の adapter を使う）。adapter と alpha は、ジョブの中で決める（2 つ以上なら合成するので重い）
         val req = GenerationRequest(prompt.trim(), orientation, s, hires, baseStepsValue, hiresStepsValue.coerceAtLeast(1), hiresDenoiseValue, draftMode,
-            lora, if (lora.isEmpty()) 0f else loraStrength * loraCoefficient(lora), if (lora.isEmpty()) 0f else loraStrength)
-        launchJob { engine.begin(req, ::onProgress) }
+            loras = activeLoras())
+        launchJob(orientation) {
+            val ready = withContext(Dispatchers.IO) {
+                val ctx = coroutineContext
+                resolveLora(req) { !ctx.isActive }
+            }
+            engine.begin(ready, ::onProgress)
+        }
     }
 
     /** ✨ Hires（SSXL の hiresActionBtn）。直近の Base のみの結果にだけ掛けられる。 */
     fun refine() {
         val (baseId, base) = lastBase ?: return
         if (busy || activeId != baseId) return
-        launchJob(refining = true) { engine.beginRefine(base, hiresStepsValue.coerceAtLeast(1), hiresDenoiseValue, draftMode, ::onProgress) }
+        launchJob(base.request.orientation, refining = true) { engine.beginRefine(base, hiresStepsValue.coerceAtLeast(1), hiresDenoiseValue, draftMode, ::onProgress) }
     }
 
     /** このジョブを ✨ Hires 化できるか。 */
@@ -810,7 +896,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * ジョブを起動する。流れ: start（CLIP・UNet。ここまでは 1 度に 1 ジョブ）→ 次のジョブを受け付ける → await（VAE。裏で進み、次のジョブと重なる）。
      * 画像は VAE が終わってから履歴とプレビューに入る。
      */
-    private fun launchJob(refining: Boolean = false, start: suspend () -> PendingGeneration) {
+    private fun launchJob(orientation: Orientation, refining: Boolean = false, start: suspend () -> PendingGeneration) {
         running = true
         error = null
         progress = null
@@ -821,6 +907,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // 生成中のプレビュー（TAESD）。届くのはネイティブのスレッドなので、メインスレッドへ渡し直す。古いジョブのものは epoch で捨てる
         val epoch = ++previewEpoch
         livePreview = null
+        previewOrientation = orientation
         native.previewSink = if (previewTaesd) { bmp ->
             viewModelScope.launch { if (epoch == previewEpoch && (running || decodingJobs > 0)) livePreview = bmp }
         } else null
@@ -972,18 +1059,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         baseSteps = a.baseSteps.toString()
         hiresSteps = if (a.hires) a.hiresSteps.toString() else "0"
         hiresDenoise = a.denoise.toString()
-        if (a.lora.isEmpty()) {
-            updateLoraName("")
-        } else if (File(lorasDir(), a.lora + LORA_SUFFIX).isFile) {
-            updateLoraName(a.lora)
-            updateLoraStrength(a.loraStrength)
-        } else {
-            updateLoraName("")
-            doneNote = "LoRA「${a.lora}」が無いので、LoRA なしにしました"
-        }
+        val (have, missing) = a.loras.partition { File(lorasDir(), it.name + LORA_SUFFIX).isFile }
+        loraSelection = have
+        if (missing.isNotEmpty()) doneNote = "LoRA「${missing.joinToString("」「") { it.name }}」が無いので、外しました"
     }
 
-    fun thumbnail(item: HistoryItem): Bitmap? = store.loadBitmap(item, maxSide = 360)
+    fun thumbnail(item: HistoryItem): Bitmap? = store.thumbnail(item, maxSide = 360)
 
     fun saveToGallery() {
         val bmp = previewBitmap ?: return
@@ -1079,7 +1160,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private const val BIT_BASE_UNET = 1 shl 3
         private const val BIT_GPU_VAE = 1 shl 5
         private const val LORA_SUFFIX = com.dragonspeedxl.app.lora.LoraConverter.SUFFIX
+        /** 合成した adapter の置き場（models/loras/mix/。LoRA の一覧には出ない）。エンジンには "mix/<鍵>" として渡す */
+        private const val MIX_DIR = "mix"
+        /** 残しておく合成の組の数（最近使ったもの） */
+        private const val MIX_KEEP = 2
         private const val BIT_LOADING = 1 shl 6
         private const val BIT_TILE = 1 shl 7
+
+        private val SPACES = Regex("\\s+")
+        private val BLACKLIST_SEPARATORS = Regex("[,\\s]+")
     }
 }

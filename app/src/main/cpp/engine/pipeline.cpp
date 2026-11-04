@@ -1,6 +1,7 @@
 #include "engine/pipeline.h"
 
 #include "engine/refine.h"
+#include "engine/util.h"
 
 #include <sys/stat.h>
 
@@ -59,18 +60,6 @@ struct Schedule {
         return std::vector<double>(all.end() - (steps + 1), all.end());
     }
 };
-
-bool ReadFile(const std::string& path, std::vector<float>* out) {
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f) return false;
-    size_t n = static_cast<size_t>(f.tellg());
-    out->resize(n / sizeof(float));
-    f.seekg(0);
-    f.read(reinterpret_cast<char*>(out->data()), n);
-    return true;
-}
-
-bool Exists(const std::string& p) { std::ifstream f(p); return f.good(); }
 
 // 共通の必須ファイル。NPU の VAE は vae_64_w8a16.bin（あれば優先）か vae_64.bin（FP16）のどちらか 1 つでよい（MissingFiles で別に調べる）
 const char* kFiles[] = {"clip_l.bin", "clip_g.bin", "text_projection.f32", "clip_vocab.tsv", "clip_merges.txt"};
@@ -153,14 +142,19 @@ void Pipeline::SetMemorySaver(bool on) { g_mem_saver = on; }
 std::string Pipeline::MissingFiles(const std::string& dir) {
     std::string m;
     auto add = [&](const std::string& f) { m += std::string(m.empty() ? "" : ", ") + f; };
-    for (const char* f : kFiles) if (!Exists(dir + "/" + f)) add(f);
-    if (!Exists(dir + "/vae_64_w8a16.bin") && !Exists(dir + "/vae_64.bin")) add("vae_64_w8a16.bin（または vae_64.bin）");
-    if (!Exists(dir + "/" + UnetFile())) add(UnetFile());
-    if (!Exists(dir + "/" + DefaultAdapter())) add(DefaultAdapter());
+    for (const char* f : kFiles) if (!FileExists(dir + "/" + f)) add(f);
+    if (!FileExists(dir + "/vae_64_w8a16.bin") && !FileExists(dir + "/vae_64.bin")) add("vae_64_w8a16.bin（または vae_64.bin）");
+    if (!FileExists(dir + "/" + UnetFile())) add(UnetFile());
+    if (!FileExists(dir + "/" + DefaultAdapter())) add(DefaultAdapter());
     return m;
 }
 
-bool Pipeline::HasUnet(const std::string& dir) { return Exists(dir + "/" + UnetFile()) && Exists(dir + "/" + DefaultAdapter()); }
+bool Pipeline::HasUnet(const std::string& dir) { return FileExists(dir + "/" + UnetFile()) && FileExists(dir + "/" + DefaultAdapter()); }
+
+// DLC か、コンパイル済みの bin のどちらかがあれば使える（読むのは bin が先。DLC は bin を作るときだけ要る）
+bool Pipeline::HasGpuVae(const std::string& dir, const std::string& lib_dir) {
+    return (FileExists(dir + "/" + kGpuDlc) || FileExists(dir + "/" + kGpuBin)) && FileExists(lib_dir + "/libQnnGpu.so");
+}
 
 // UNet に適用する super adapter（4 グラフ共通の 1 ファイル）。LoRA なら loras/<名前>.4g.bin、無ければ default（重みが 0）
 std::string Pipeline::AdapterPath(const std::string& lora) const {
@@ -186,8 +180,7 @@ bool Pipeline::Init(const std::string& model_dir, const std::string& lib_dir, st
     if (!miss.empty()) { if (err) *err = "モデルファイルがありません: " + miss; return false; }
     if (!lib_.Init(lib_dir, err)) return false;
     // GPU は任意（無くても NPU だけで動く）
-    // DLC か、コンパイル済みの bin のどちらかがあれば使える（読むのは bin が先。DLC は bin を作るときだけ要る）
-    if ((Exists(dir_ + "/" + kGpuDlc) || Exists(dir_ + "/" + kGpuBin)) && Exists(lib_dir + "/libQnnGpu.so")) {
+    if (HasGpuVae(dir_, lib_dir)) {
         std::string gerr;
         gpu_lib_ok_ = gpu_lib_.Init(lib_dir, &gerr, true);
     }
@@ -278,7 +271,7 @@ void Pipeline::Prefetch(const std::string& file) {
     std::lock_guard<std::mutex> lock(cache_mu_);
     if (cache_.count(file)) return;
     // NPU の VAE は、W8A16 版（vae_64_w8a16.bin）があればそちらを使う（FP16 版より速い。画質を比べるときは、このファイルを置く／消すだけで切り替わる）
-    const bool vae_q = file == "vae_64.bin" && Exists(dir_ + "/vae_64_w8a16.bin");
+    const bool vae_q = file == "vae_64.bin" && FileExists(dir_ + "/vae_64_w8a16.bin");
     const std::string path = dir_ + "/" + (vae_q ? "vae_64_w8a16.bin" : file);
     cache_[file] = std::async(std::launch::async, [this, path]() {
         LoadResult r;
@@ -338,8 +331,8 @@ void Pipeline::PrefetchGpuVae() {
         LoadResult r;
         std::string e;
         auto m = std::make_shared<QnnModel>();
-        if (Exists(bin) && m->Load(&gpu_lib_, bin, &e)) { r.model = std::move(m); return r; }
-        if (Exists(bin)) std::remove(bin.c_str());     // 古い・壊れたキャッシュは作り直す
+        if (FileExists(bin) && m->Load(&gpu_lib_, bin, &e)) { r.model = std::move(m); return r; }
+        if (FileExists(bin)) std::remove(bin.c_str());     // 古い・壊れたキャッシュは作り直す
         m = std::make_shared<QnnModel>();
         if (gpu_lib_.BuildGpuContextBinary(dlc, bin, &r.err) && m->Load(&gpu_lib_, bin, &r.err)) r.model = std::move(m);
         return r;
@@ -710,9 +703,7 @@ Pipeline::DecodeResult Pipeline::DecodeImpl(std::shared_ptr<QnnModel> vae, std::
                 dst[static_cast<size_t>(i) * 3 + c] = static_cast<uint8_t>(static_cast<int>((v + 1.f) * 0.5f * 255.f + 0.5f));
             }
         }
-        int32_t* argb = res.img.argb.data() + static_cast<size_t>(py) * W;
-        for (int i = 0; i < W; i++, dst += 3)
-            argb[i] = static_cast<int32_t>(0xFF000000u | (static_cast<uint32_t>(dst[0]) << 16) | (static_cast<uint32_t>(dst[1]) << 8) | dst[2]);
+        RgbToArgb(dst, res.img.argb.data() + static_cast<size_t>(py) * W, static_cast<size_t>(W));
     };
     std::thread acc_thread([&] {
         std::vector<float> inv(static_cast<size_t>(H) * W, 0.f);
@@ -994,7 +985,7 @@ uint64_t Pipeline::Begin(const GenParams& p_in, const ProgressFn& progress, std:
     base_file_ = GraphKey(p.portrait, false);
     tile_file_ = GraphKey(p.portrait, true);
     if (!HasUnet(dir_)) { if (err) *err = "モデルファイルがありません: " + MissingFiles(dir_); return 0; }
-    if (!Exists(AdapterPath(p.lora_adapter))) { if (err) *err = "LoRA の adapter がありません: " + AdapterPath(p.lora_adapter); return 0; }
+    if (!FileExists(AdapterPath(p.lora_adapter))) { if (err) *err = "LoRA の adapter がありません: " + AdapterPath(p.lora_adapter); return 0; }
     lib_.Vote();
     progress(PStage::kText, 1, 1);
     // 条件（プロンプト、CLIP と adapter、TE の強さ）が前回と同じなら、CLIP は実行しない（前回の hidden_ / pooled_ をそのまま使う）
@@ -1099,10 +1090,9 @@ bool Pipeline::RefineRegion(int x, int y, int w, int h, double denoise, const Pr
 
     BlendRefined(img->rgb.data(), img->w, img->h, win, patch.rgb.data(), RefineParams());
     if (!img->argb.empty()) {   // JNI に渡す argb も、窓の範囲だけ作り直す
-        for (int r = 0; r < win.wh; r++) for (int q = 0; q < win.ww; q++) {
-            const size_t i = (static_cast<size_t>(win.y0 + r) * img->w + win.x0 + q);
-            const uint8_t* p = &img->rgb[i * 3];
-            img->argb[i] = static_cast<int32_t>(0xFF000000u | (static_cast<uint32_t>(p[0]) << 16) | (static_cast<uint32_t>(p[1]) << 8) | p[2]);
+        for (int r = 0; r < win.wh; r++) {
+            const size_t i = static_cast<size_t>(win.y0 + r) * img->w + win.x0;
+            RgbToArgb(&img->rgb[i * 3], &img->argb[i], static_cast<size_t>(win.ww));
         }
     }
     return true;

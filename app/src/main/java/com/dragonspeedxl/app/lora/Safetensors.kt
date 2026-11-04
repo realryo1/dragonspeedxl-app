@@ -4,6 +4,8 @@ import org.json.JSONObject
 import java.io.Closeable
 import java.io.File
 import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /** safetensors の読み取り（必要なテンソルだけ float32 にする。F32 / F16 / BF16）。 */
 class Safetensors(file: File) : Closeable {
@@ -49,25 +51,29 @@ class Safetensors(file: File) : Closeable {
         val raw = ByteArray(size)
         raf.seek(dataStart + info.start)
         raf.readFully(raw)
+        // リトルエンディアンの並びとしてまとめて読む（1 要素ずつバイトを組み立てない）
+        val bb = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN)
         return when (info.dtype) {
-            "F32" -> FloatArray(size / 4) { java.lang.Float.intBitsToFloat(le32(raw, it * 4)) }
-            "F16" -> FloatArray(size / 2) { halfToFloat(le16(raw, it * 2)) }
-            "BF16" -> FloatArray(size / 2) { java.lang.Float.intBitsToFloat(le16(raw, it * 2) shl 16) }
+            "F32" -> FloatArray(size / 4).also { bb.asFloatBuffer().get(it) }
+            "F16" -> bb.asShortBuffer().let { s -> FloatArray(size / 2) { HALF_TO_FLOAT[s.get(it).toInt() and 0xffff] } }
+            "BF16" -> bb.asShortBuffer().let { s -> FloatArray(size / 2) { java.lang.Float.intBitsToFloat((s.get(it).toInt() and 0xffff) shl 16) } }
             else -> error("$key の型 ${info.dtype} は読めない")
         }
     }
 
     override fun close() = raf.close()
 
-    private fun le16(b: ByteArray, i: Int) = (b[i].toInt() and 0xff) or ((b[i + 1].toInt() and 0xff) shl 8)
-    private fun le32(b: ByteArray, i: Int) = le16(b, i) or (le16(b, i + 2) shl 16)
-
     companion object {
         /** 読める型の 1 要素の大きさ（バイト） */
         private val ELEM_SIZE = mapOf("F32" to 4L, "F16" to 2L, "BF16" to 2L)
 
-        /** IEEE 半精度 → 単精度（厳密。numpy の float16 → float32 と同じ）。 */
-        fun halfToFloat(h: Int): Float {
+        /** 半精度の全 65,536 通りの値（halfToFloat の表。LoRA の FP16 の重みを読むたびに計算し直さない） */
+        private val HALF_TO_FLOAT by lazy { FloatArray(1 shl 16) { computeHalf(it) } }
+
+        /** IEEE 半精度（下位 16 ビット）→ 単精度（厳密。numpy の float16 → float32 と同じ）。 */
+        fun halfToFloat(h: Int): Float = HALF_TO_FLOAT[h and 0xffff]
+
+        private fun computeHalf(h: Int): Float {
             val sign = (h shr 15) and 1
             val exp = (h shr 10) and 0x1f
             val man = h and 0x3ff

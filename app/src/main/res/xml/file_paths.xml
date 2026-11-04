@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider で外へ渡してよい場所。QR の写真の一時置き場（キャッシュの qr/）だけ -->
+<paths>
+    <cache-path name="qr" path="qr/" />
+</paths>

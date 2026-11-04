@@ -113,8 +113,8 @@ class DownloadService : Service() {
             val nm = context.getSystemService(NotificationManager::class.java)
             if (nm.getNotificationChannel(CHANNEL_ID) == null) {
                 nm.createNotificationChannel(
-                    NotificationChannel(CHANNEL_ID, "ダウンロード", NotificationManager.IMPORTANCE_LOW).apply {
-                        description = "モデルと LoRA の取得の進み具合"
+                    NotificationChannel(CHANNEL_ID, "バックグラウンドの処理", NotificationManager.IMPORTANCE_LOW).apply {
+                        description = "モデル・LoRA の取得、履歴の書き出し・読み込みの進み具合"
                     },
                 )
             }

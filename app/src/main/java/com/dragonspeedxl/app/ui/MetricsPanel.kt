@@ -62,7 +62,6 @@ private val PanelExit = shrinkVertically(tween(AnimMs, easing = FastOutSlowInEas
  */
 @Composable
 fun MetricsSummary(vm: MainViewModel) {
-    val sc = series()
     val m = vm.metrics ?: return
     val r = m.raw
     val cpu = r?.cpuUtil?.takeIf { it.isNotEmpty() }?.average()?.toFloat() ?: (m.cpuCores / m.cpuTotalCores).coerceIn(0f, 1f)
@@ -144,7 +143,6 @@ private fun MonitorStatus(vm: MainViewModel) {
 
 @Composable
 private fun MetricsBody(m: Metrics, r: RawMetrics?, h: List<Metrics>) {
-    val sc = series()
     val t = h.map { it.timeMs }   // 各サンプルの時刻（グラフの横軸を時間に比例させる）
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         // CPU（全体の推移 + コア別。コアの裏に B=Prime / L=Performance）
@@ -187,8 +185,7 @@ private fun MetricsBody(m: Metrics, r: RawMetrics?, h: List<Metrics>) {
 /** モニターの系列色。パレット（壁紙由来）から取る。GPU だけは区別しやすいよう固定の琥珀色。 */
 private class Series(val cpu: Color, val mem: Color, val npu: Color, val gpu: Color, val warn: Color)
 
-@Composable
-private fun series(): Series = Series(Color(0xFF7C9CF5), Color(0xFF9B7FD1), Color(0xFF35C4B8), Color(0xFFE8A33D), Color(0xFFE0566A))   // テーマに依らない固定のカラフルな配色
+private val sc = Series(Color(0xFF7C9CF5), Color(0xFF9B7FD1), Color(0xFF35C4B8), Color(0xFFE8A33D), Color(0xFFE0566A))   // テーマに依らない固定のカラフルな配色
 
 private fun pct(v: Float) = (v * 100).toInt()
 
@@ -239,7 +236,6 @@ private fun Info(main: String, rest: String) {
 /** CPU の各コアの使用率（縦棒）と周波数。四角の裏にうっすら B（Prime）/ L（Performance）。 */
 @Composable
 private fun CoreBars(r: RawMetrics) {
-    val sc = series()
     Row(Modifier.fillMaxWidth().padding(start = LabelWidth, top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         r.cpuUtil.forEachIndexed { i, u ->
             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {

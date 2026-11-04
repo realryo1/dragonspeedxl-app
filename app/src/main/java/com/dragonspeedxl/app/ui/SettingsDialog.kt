@@ -107,7 +107,7 @@ fun SettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("除外")
-                        Text("以下のプロンプトが含まれている履歴を隠す", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("以下の語句（プロンプト、ジョブ ID、seed など）を含む履歴を隠す", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Switch(checked = vm.blurBlacklist, onCheckedChange = { vm.updateBlurBlacklist(it) })
                 }
@@ -186,21 +186,19 @@ fun SettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     onCheckedChange = { vm.updateDraftMode(it) },
                     missingFile = taesdMissing,
                 )
-                // GPU の上限は、高速デコードが実際に効いていないとき（VAE でデコードするとき）だけ出す。TAESD が無いときは保存がオンでも VAE になるので出す
-                if (!vm.draftActive) {
-                    Column {
-                        Text("GPU使用率の上限  ${if (vm.gpuCap >= 100) "制限なし" else "${vm.gpuCap}%"}")
-                        Slider(
-                            value = vm.gpuCap.toFloat(),
-                            onValueChange = { vm.updateGpuCap(it.toInt() / 5 * 5) },
-                            valueRange = 10f..100f,
-                            steps = 17,
-                        )
-                        Text(
-                            "VAEデコードをNPUとGPUで分担するときのGPUの上限です。描画が重くなる場合に下げてください。",
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                // GPU の上限は常に出す。高速デコードが有効でも、生成中のプレビュー（TAESD）には効くため
+                Column {
+                    Text("GPU使用率の上限  ${if (vm.gpuCap >= 100) "制限なし" else "${vm.gpuCap}%"}")
+                    Slider(
+                        value = vm.gpuCap.toFloat(),
+                        onValueChange = { vm.updateGpuCap(it.toInt() / 5 * 5) },
+                        valueRange = 10f..100f,
+                        steps = 17,
+                    )
+                    Text(
+                        "VAEデコードをNPUとGPUで分担するときと、生成中のプレビューで使うGPUの上限です（高速デコードの最終デコードには効きません）。描画が重くなる場合に下げてください。",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         },

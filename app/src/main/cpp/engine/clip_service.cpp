@@ -3,7 +3,6 @@
 #include <android/log.h>
 #include <fcntl.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -13,13 +12,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <fstream>
 #include <map>
 #include <memory>
 #include <thread>
 
 #include "engine/clip_tokenizer.h"
 #include "engine/qnn_model.h"
+#include "engine/util.h"
 
 namespace dsxl {
 namespace {
@@ -30,8 +29,6 @@ constexpr int kHidden = 77 * 2048, kPooled = 1280;
 constexpr uint32_t kMaxPrompt = 16 * 1024, kMaxLora = 256;
 
 struct Header { uint32_t type, prompt_len, lora_len; float te_alpha; };
-
-bool Exists(const std::string& p) { struct stat st{}; return stat(p.c_str(), &st) == 0; }
 
 bool ReadAll(int fd, void* buf, size_t n) {
     auto* p = static_cast<char*>(buf);
@@ -59,16 +56,6 @@ socklen_t MakeAddr(sockaddr_un* a) {
     const std::string name = "dsxl_clip_" + std::to_string(getuid());
     std::memcpy(a->sun_path + 1, name.data(), name.size());
     return static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + 1 + name.size());
-}
-
-bool ReadFloats(const std::string& path, std::vector<float>* out) {
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f) return false;
-    const size_t n = static_cast<size_t>(f.tellg());
-    out->resize(n / sizeof(float));
-    f.seekg(0);
-    f.read(reinterpret_cast<char*>(out->data()), static_cast<std::streamsize>(n));
-    return true;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -169,7 +156,7 @@ std::string ClipFileFor(const std::string& model_dir, const char* which, const s
     const std::string w = which;
     if (!lora.empty()) {
         const std::string ad = model_dir + "/loras/" + lora + "." + w + ".bin";
-        if (Exists(model_dir + "/" + w + "_lora.bin") && Exists(ad)) { if (adapter) *adapter = ad; return w + "_lora.bin"; }
+        if (FileExists(model_dir + "/" + w + "_lora.bin") && FileExists(ad)) { if (adapter) *adapter = ad; return w + "_lora.bin"; }
     }
     if (adapter) adapter->clear();
     return w + ".bin";

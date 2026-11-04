@@ -7,9 +7,11 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
+import android.util.LruCache
 import com.dragonspeedxl.app.engine.GenerationResult
 import com.dragonspeedxl.app.engine.Orientation
 import com.dragonspeedxl.app.lora.LoraConverter
+import com.dragonspeedxl.app.lora.LoraUse
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -34,10 +36,8 @@ data class HistoryItem(
     val denoise: Double = 0.39,
     /** 表示用の印。"_half" は旧機能（UNet の変種）、"_draft" は速度優先（TAESD を最終画像にした）で生成した履歴。ふつうは空。 */
     val variant: String = "",
-    /** 使った LoRA の名前（models/loras/<名前>.4g.bin）。空なら LoRA なし。流用のとき、LoRA の欄をこれに合わせる。 */
-    val lora: String = "",
-    /** そのときの LoRA の強さ w（LoRA なしなら 0）。流用のとき、LoRA の強さをこれに合わせる。 */
-    val loraStrength: Float = 0f,
+    /** 使った LoRA の名前（models/loras/<名前>.4g.bin）と強さ w（選んだ順）。空なら LoRA なし。流用のとき、LoRA の欄をこれに合わせる。 */
+    val loras: List<LoraUse> = emptyList(),
 ) {
     /** SSXL の webui と同じ形式のジョブ ID（16 進 10 桁。例 58e078900f）。id（作成時刻ミリ秒）の下位 40 ビット。 */
     val jobId: String get() = "%010x".format((id.toLongOrNull() ?: 0L) and 0xFFFFFFFFFFL)
@@ -81,10 +81,17 @@ class HistoryStore(context: Context) {
                 hiresSteps = o.optInt("hiresSteps", 4),
                 denoise = o.optDouble("denoise", 0.39),
                 variant = o.optString("variant", ""),
-                lora = o.optString("lora", ""),
-                loraStrength = o.optDouble("loraStrength", 0.0).toFloat(),
+                loras = parseLoras(o),
             )
         }
+    }
+
+    /** 項目の LoRA。"loras"（[{name, strength}]）が無い古い履歴は、"lora" と "loraStrength"（1 つだけ）から読む。 */
+    private fun parseLoras(o: JSONObject): List<LoraUse> {
+        val arr = o.optJSONArray("loras")
+        if (arr != null) return (0 until arr.length()).map { arr.getJSONObject(it) }.map { LoraUse(it.getString("name"), it.optDouble("strength", 1.0).toFloat()) }
+        val name = o.optString("lora", "")
+        return if (name.isEmpty()) emptyList() else listOf(LoraUse(name, o.optDouble("loraStrength", 0.0).toFloat()))
     }
 
     /** 生成開始時に決めるジョブ ID の元（作成時刻ミリ秒）。ステータス行の「Job #…」に先に出すため、add より前に払い出す。 */
@@ -96,8 +103,7 @@ class HistoryStore(context: Context) {
         result.hiresDone, result.totalMillis, System.currentTimeMillis(),
         result.request.steps, if (result.hiresDone) result.request.hiresSteps else 0, result.request.hiresDenoise,   // Hires なしは 0 と記録する
         variant = if (result.request.draft) "_draft" else "",   // 速度優先（TAESD が最終画像）は、バッジとタイルのラベルに draft と出す
-        lora = result.request.lora,
-        loraStrength = if (result.request.lora.isEmpty()) 0f else result.request.loraTeAlpha,   // loraTeAlpha は LoRA の強さ w（係数 c は掛けない）
+        loras = result.request.loras,
     )
 
     /** 画像（PNG。1080p で重い）と index.json を書く。画像には生成情報（A1111 互換の parameters）を入れる。別スレッドで呼んでよい（排他あり）。 */
@@ -117,6 +123,18 @@ class HistoryStore(context: Context) {
         val ids = items.map { it.id }.toSet()
         ids.forEach { File(dir, "$it.png").delete() }
         synchronized(lock) { write(load().filterNot { it.id in ids }) }
+    }
+
+    /** 一覧のサムネイルの覚え（キーは id・ファイルの時刻・縮小の大きさ）。ページを戻したり履歴を開き直したりしたときに、PNG を復号し直さない。 */
+    private val thumbs = object : LruCache<String, Bitmap>(THUMB_CACHE_BYTES) {
+        override fun sizeOf(key: String, value: Bitmap) = value.byteCount
+    }
+
+    /** 一覧のサムネイル（長辺が maxSide 以上になる 1/2^n の縮小）。同じファイルなら覚えたものを返す。別スレッドで呼んでよい。 */
+    fun thumbnail(item: HistoryItem, maxSide: Int): Bitmap? {
+        val key = "${item.id}@${File(dir, "${item.id}.png").lastModified()}/$maxSide"
+        thumbs.get(key)?.let { return it }
+        return loadBitmap(item, maxSide)?.also { thumbs.put(key, it) }
     }
 
     fun loadBitmap(item: HistoryItem, maxSide: Int = 0): Bitmap? {
@@ -162,7 +180,9 @@ class HistoryStore(context: Context) {
                 .put("orientation", it.orientation.name).put("hires", it.hires)
                 .put("totalMillis", it.totalMillis).put("createdAt", it.createdAt)
                 .put("baseSteps", it.baseSteps).put("hiresSteps", it.hiresSteps).put("denoise", it.denoise).put("variant", it.variant)
-                .put("lora", it.lora).put("loraStrength", it.loraStrength.toDouble())
+                .put("loras", JSONArray().also { a -> it.loras.forEach { u -> a.put(JSONObject().put("name", u.name).put("strength", u.strength.toDouble())) } })
+            // 古い版のアプリでも読めるように、最初の LoRA を "lora" / "loraStrength" にも入れる
+            it.loras.firstOrNull()?.let { u -> o.put("lora", u.name).put("loraStrength", u.strength.toDouble()) }
             if (imagePath && File(dir, "${it.id}.png").isFile) o.put("image", "images/${it.id}.png")
             arr.put(o)
         }
@@ -233,11 +253,11 @@ class HistoryStore(context: Context) {
         return ImportResult(added = added.size, skipped = items.size - candidates.size, noImage = candidates.size - added.size)
     }
 
-    /** 取り込んだ項目の LoRA 名を確かめる。LoRA の名前として使えない（区切り文字などを含む）なら、LoRA なしの項目にする。 */
+    /** 取り込んだ項目の LoRA 名を確かめる。LoRA の名前として使えない（区切り文字などを含む）ものは外す。 */
     private fun safeLora(item: HistoryItem): HistoryItem {
-        if (item.lora.isEmpty()) return item
-        val ok = runCatching { LoraConverter.checkName(item.lora) }.isSuccess
-        return if (ok) item else item.copy(lora = "", loraStrength = 0f)
+        if (item.loras.isEmpty()) return item
+        val ok = item.loras.filter { runCatching { LoraConverter.checkName(it.name) }.isSuccess && it.strength.isFinite() }
+        return if (ok.size == item.loras.size) item else item.copy(loras = ok)
     }
 
     /** zip の今のエントリを、上限まで読む。超えたら例外。 */
@@ -279,5 +299,7 @@ class HistoryStore(context: Context) {
         /** 取り込む zip の上限（一覧は数 MB もあれば十分。画像は 1080p の PNG より十分大きく取る）。 */
         const val MAX_INDEX_BYTES = 8 shl 20
         const val MAX_IMAGE_BYTES = 64L shl 20
+        /** サムネイルの覚えの上限（1080p の 1/4 で 1 枚約 0.5MB。4×4 のページで約 3 ページ分） */
+        const val THUMB_CACHE_BYTES = 24 shl 20
     }
 }

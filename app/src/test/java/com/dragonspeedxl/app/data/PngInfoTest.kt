@@ -1,6 +1,7 @@
 package com.dragonspeedxl.app.data
 
 import com.dragonspeedxl.app.engine.Orientation
+import com.dragonspeedxl.app.lora.LoraUse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -21,13 +22,12 @@ class PngInfoTest {
     private fun item(
         prompt: String = "hatsune miku, shirayuki towa",
         hires: Boolean = true,
-        lora: String = "",
-        loraStrength: Float = 0f,
+        loras: List<LoraUse> = emptyList(),
         variant: String = "",
         orientation: Orientation = Orientation.PORTRAIT,
     ) = HistoryItem(
         id = "1", prompt = prompt, seed = 11L, orientation = orientation, hires = hires, totalMillis = 0L, createdAt = 0L,
-        baseSteps = 2, hiresSteps = if (hires) 4 else 0, denoise = 0.39, variant = variant, lora = lora, loraStrength = loraStrength,
+        baseSteps = 2, hiresSteps = if (hires) 4 else 0, denoise = 0.39, variant = variant, loras = loras,
     )
 
     @Test
@@ -47,9 +47,15 @@ class PngInfoTest {
             "Steps: 2, Sampler: LCM, Schedule type: SGM Uniform, CFG scale: 1, Seed: 11, Size: 1280x720, " +
             "Model: waiIllustriousSDXL_v160, Decoder: TAESD, Version: dragonspeedXL"
         assertEquals(expected, PngInfo.infotext(item(
-            prompt = "hatsune miku", hires = false, lora = "mmm", loraStrength = 1.2f,
+            prompt = "hatsune miku", hires = false, loras = listOf(LoraUse("mmm", 1.2f)),
             variant = "_draft", orientation = Orientation.LANDSCAPE,
         )))
+    }
+
+    @Test
+    fun multipleLorasInOrder() {
+        val text = PngInfo.infotext(item(prompt = "kagamine rin, sitting", loras = listOf(LoraUse("mw25", 0.8f), LoraUse("mmm", 1f))))
+        assertTrue(text, text.startsWith("kagamine rin, sitting <lora:NoobV065sHyperDmd:1> <lora:mw25:0.8> <lora:mmm:1>\n"))
     }
 
     @Test

@@ -150,5 +150,14 @@ internal fun sha256Of(file: File): String {
             md.update(buf, 0, n)
         }
     }
-    return md.digest().joinToString("") { "%02x".format(it) }
+    return md.digest().toHex()
 }
+
+/** 16 進の小文字（ハッシュの表記。sha256 の照合と LoRA の合成の鍵に使う）。 */
+internal fun ByteArray.toHex(): String {
+    val s = StringBuilder(size * 2)
+    for (b in this) { val v = b.toInt() and 0xFF; s.append(HEX[v ushr 4]).append(HEX[v and 0xF]) }
+    return s.toString()
+}
+
+private const val HEX = "0123456789abcdef"

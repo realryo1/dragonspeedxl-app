@@ -1,16 +1,18 @@
 #include <jni.h>
-#include <sys/stat.h>
 
 #include <android/log.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 
 #include "engine/pipeline.h"
+#include "engine/util.h"
 
 namespace {
 std::unique_ptr<dsxl::Pipeline> g_pipe;
@@ -24,28 +26,23 @@ std::string ToStd(JNIEnv* env, jstring s) {
     if (c) env->ReleaseStringUTFChars(s, c);
     return out;
 }
-bool Exists(const std::string& p) { struct stat st{}; return stat(p.c_str(), &st) == 0; }
-
-// [w, h, ARGB...]
-jintArray ToJava(JNIEnv* env, const dsxl::Image& img) {
-    const int n = img.w * img.h;
-    jintArray arr = env->NewIntArray(2 + n);
+// head 個の値のあとに、w×h 画素の ARGB を並べた Java の int 配列を作る。一時バッファを作らず、Java の配列に直接書く。
+// argb（VAE が作ったもの）があればコピーだけ、無ければ rgb から変換する
+jintArray ArgbArray(JNIEnv* env, std::initializer_list<jint> head, int w, int h, const std::vector<int32_t>* argb, const uint8_t* rgb) {
+    const size_t n = static_cast<size_t>(w) * h, off = head.size();
+    jintArray arr = env->NewIntArray(static_cast<jsize>(off + n));
     if (!arr) return nullptr;
-    // 一時バッファを作らず、Java の配列に直接書く（800 万バイトのコピーを 1 回省く）
     jint* buf = static_cast<jint*>(env->GetPrimitiveArrayCritical(arr, nullptr));
     if (!buf) return nullptr;
-    buf[0] = img.w; buf[1] = img.h;
-    if (img.argb.size() == static_cast<size_t>(n)) {   // VAE が作った ARGB があれば、コピーだけ
-        std::memcpy(buf + 2, img.argb.data(), static_cast<size_t>(n) * sizeof(jint));
-        env->ReleasePrimitiveArrayCritical(arr, buf, 0);
-        return arr;
-    }
-    const uint8_t* s = img.rgb.data();
-    for (int i = 0; i < n; i++, s += 3)
-        buf[2 + i] = static_cast<jint>(0xFF000000u | (static_cast<uint32_t>(s[0]) << 16) | (static_cast<uint32_t>(s[1]) << 8) | s[2]);
+    std::copy(head.begin(), head.end(), buf);
+    if (argb && argb->size() == n) std::memcpy(buf + off, argb->data(), n * sizeof(jint));
+    else dsxl::RgbToArgb(rgb, buf + off, n);
     env->ReleasePrimitiveArrayCritical(arr, buf, 0);
     return arr;
 }
+
+// [w, h, ARGB...]
+jintArray ToJava(JNIEnv* env, const dsxl::Image& img) { return ArgbArray(env, {img.w, img.h}, img.w, img.h, &img.argb, img.rgb.data()); }
 
 // 生成中のプレビュー用リスナー（Kotlin の NativeEngine.PreviewListener.onPreview(w, h, ARGB[])）。呼ぶのはネイティブのワーカースレッドなので、そのたびに JVM に接続する。
 JavaVM* g_vm = nullptr;
@@ -62,14 +59,11 @@ void CallPreview(int w, int h, const std::vector<uint8_t>& rgb) {
         if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
         attached = true;
     }
-    const int n = w * h;
-    std::vector<jint> buf(n);
-    for (int i = 0; i < n; i++) buf[i] = static_cast<jint>(0xFF000000u | (rgb[i * 3] << 16) | (rgb[i * 3 + 1] << 8) | rgb[i * 3 + 2]);
-    jintArray arr = env->NewIntArray(n);
-    env->SetIntArrayRegion(arr, 0, n, buf.data());
-    env->CallVoidMethod(g_preview_listener, g_preview_mid, static_cast<jint>(w), static_cast<jint>(h), arr);
+    if (jintArray arr = ArgbArray(env, {}, w, h, nullptr, rgb.data())) {
+        env->CallVoidMethod(g_preview_listener, g_preview_mid, static_cast<jint>(w), static_cast<jint>(h), arr);
+        env->DeleteLocalRef(arr);
+    }
     if (env->ExceptionCheck()) env->ExceptionClear();
-    env->DeleteLocalRef(arr);
     if (attached) g_vm->DetachCurrentThread();
 }
 
@@ -88,8 +82,8 @@ Java_com_dragonspeedxl_app_engine_NativeEngine_nativeBackendInfo(JNIEnv* env, jo
     std::string md = ToStd(env, model_dir), ld = ToStd(env, lib_dir);
     std::string miss = dsxl::Pipeline::MissingFiles(md);
     int libs = 0;
-    for (const char* f : {"libQnnHtp.so", "libQnnSystem.so", "libQnnHtpV81Stub.so", "libQnnHtpV81Skel.so"}) libs += Exists(ld + "/" + f) ? 1 : 0;
-    const bool gpu = (Exists(md + "/gpu/vae_64_fp32.dlc") || Exists(md + "/gpu/vae_64_gpu.bin")) && Exists(ld + "/libQnnGpu.so");
+    for (const char* f : {"libQnnHtp.so", "libQnnSystem.so", "libQnnHtpV81Stub.so", "libQnnHtpV81Skel.so"}) libs += dsxl::FileExists(ld + "/" + f) ? 1 : 0;
+    const bool gpu = dsxl::Pipeline::HasGpuVae(md, ld);
     std::string s = "QNN lib: " + std::to_string(libs) + "/4 / モデル: " + (miss.empty() ? "OK（" + std::string(dsxl::Pipeline::UnetFile()) + "）" : "不足 " + miss) +
                     " / GPU-VAE: " + (gpu ? "OK" : "なし") + "\n" + md;
     return env->NewStringUTF(s.c_str());

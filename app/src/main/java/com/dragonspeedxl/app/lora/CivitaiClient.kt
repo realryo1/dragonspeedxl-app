@@ -1,5 +1,6 @@
 package com.dragonspeedxl.app.lora
 
+import com.dragonspeedxl.app.download.toHex
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -50,7 +51,7 @@ class CivitaiClient(private val token: String) {
                 progress(done, total)
             }
         }
-        val got = md.digest().joinToString("") { "%02x".format(it) }
+        val got = md.digest().toHex()
         if (got != expected) {
             part.delete()
             error("ダウンロードした LoRA のハッシュが合わない（取り込みを止めた）")

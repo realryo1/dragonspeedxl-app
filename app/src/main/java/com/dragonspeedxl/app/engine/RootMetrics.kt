@@ -76,7 +76,7 @@ class RootMetrics(private val context: Context) {
                     val cpuLines = block.filter { it.startsWith("cpu") }
                     val d = block.filter { !it.startsWith("cpu") && it.isNotEmpty() }.associateBy { it.substring(0, 1) }
                     val cur = cpuLines.map { s ->
-                        val f = s.split(Regex("\\s+")).drop(1).map { it.toLong() }
+                        val f = s.split(SPACES).drop(1).map { it.toLong() }
                         f.sum() to (f[3] + f.getOrElse(4) { 0L })     // 合計, idle+iowait
                     }
                     val util = prev?.let { pv -> cur.zip(pv) { (t1, i1), (t0, i0) -> (1f - (i1 - i0).toFloat() / (t1 - t0).coerceAtLeast(1)).coerceIn(0f, 1f) } }
@@ -99,5 +99,9 @@ class RootMetrics(private val context: Context) {
         } catch (_: Exception) {
         }
         state = "su が終了しました（root の許可を確認してください）"
+    }
+
+    private companion object {
+        val SPACES = Regex("\\s+")
     }
 }
