@@ -68,7 +68,7 @@ fun ModelSetupScreen(vm: MainViewModel) {
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(
-                    "生成に必要なモデルをダウンロードします\n中断しても続きから再開されます\n※初回一度のみ。生成は完全オフラインでされます。",
+                    "生成に必要なモデルをダウンロードします。\n中断しても続きから再開され、\nバックグラウンドでもダウンロードは継続されます。\n※初回一度のみ。生成は完全オフライン。",
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

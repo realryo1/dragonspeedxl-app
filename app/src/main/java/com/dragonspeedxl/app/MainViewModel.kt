@@ -526,8 +526,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putBoolean("draftMode", on).apply()
     }
 
-    /** 起動時に見た、欠けている TAESD のファイル名（全部あれば null）。プレビューと高速デコードが使えるかの判定の元。 */
-    val taesdMissingFile: String? = missingTaesdFile()
+    /**
+     * 欠けている TAESD のファイル名（全部あれば null）。プレビューと高速デコードが使えるかの判定の元。
+     * 起動時と、モデルの取得が終わったとき（refreshNativeStatus）に数え直す。起動時の値を持ち続けると、初回の取得のあとも「無い」と出る。
+     */
+    var taesdMissingFile: String? by mutableStateOf(missingTaesdFile())
+        private set
 
     /** 保存してあるオンのまま、TAESD が無くて使えないとき（生成は VAE で動く）。設定の表示と生成画面の案内に使う。 */
     val previewBlocked: Boolean get() = taesdMissingFile != null && (previewTaesd || draftMode)
@@ -874,6 +878,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         nativeStatus = native.statusText()
         modelsTick++
         modelsNeedDownload = computeNeedDownload()
+        taesdMissingFile = missingTaesdFile()
     }
 
     private fun computeNeedDownload(): Boolean = downloader.missing(modelManifest).isNotEmpty()
