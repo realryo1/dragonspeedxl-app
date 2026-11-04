@@ -2,6 +2,7 @@ name: build-apk
 
 # 手動で実行（Actions の「Run workflow」）すると、APK を作り、Release を次の番号で作る。
 # 番号は既存の v<番号> タグの最大に 1 を足したもの（v1、v2 があれば v3）。入力はない。
+# 番号は plan ジョブで一度だけ決め、ビルド（版の名前と versionCode）と Release の両方がそれを使う。
 on:
   workflow_dispatch:
 
@@ -10,7 +11,26 @@ permissions:
   contents: read
 
 jobs:
+  # 次の番号を決める。タグは release ジョブで作る（ビルドが失敗したら、番号は使われない）。
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      number: ${{ steps.tag.outputs.number }}
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      # 既存の v<番号> タグの最大に 1 を足す（v1、v2 があれば v3）。v の付かないタグ（2 など）は数えない。
+      - name: Decide next tag
+        id: tag
+        run: |
+          max=$(git ls-remote --tags "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
+            | grep -oE 'refs/tags/v[0-9]+$' | sed 's#refs/tags/v##' | sort -n | tail -1)
+          n=$(( ${max:-0} + 1 ))
+          echo "number=$n" >> "$GITHUB_OUTPUT"
+          echo "tag=v$n" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: plan
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -66,38 +86,32 @@ jobs:
           DSXL_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           DSXL_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           DSXL_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: ./gradlew :app:assembleRelease
+        run: ./gradlew :app:assembleRelease -PdsxlRelease=${{ needs.plan.outputs.number }}
 
       - name: Remove release keystore
         if: ${{ always() }}
         run: rm -f "$RUNNER_TEMP/release.jks"
 
-      - name: Read version
-        id: ver
-        run: echo "name=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)" >> "$GITHUB_OUTPUT"
+      # APK の名前を dragonspeedXL_v<番号>.apk にする（Release に上がる名前と同じ）。
+      - name: Name the APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/dragonspeedXL_${{ needs.plan.outputs.tag }}.apk"
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dragonspeedxl-${{ steps.ver.outputs.name }}-release
-          path: app/build/outputs/apk/release/app-release.apk
+          name: dragonspeedxl-${{ needs.plan.outputs.tag }}-release
+          path: dist/dragonspeedXL_${{ needs.plan.outputs.tag }}.apk
 
   # Release への書き込みだけをここに置く。署名鍵は使わない（build で作った APK を受け取るだけ）。
   release:
-    needs: build
+    needs: [plan, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
     steps:
-      # 既存の v<番号> タグの最大に 1 を足す（v1、v2 があれば v3）。v の付かないタグ（2 など）は数えない。
-      - name: Decide next tag
-        id: tag
-        run: |
-          max=$(git ls-remote --tags "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
-            | grep -oE 'refs/tags/v[0-9]+$' | sed 's#refs/tags/v##' | sort -n | tail -1)
-          echo "name=v$(( ${max:-0} + 1 ))" >> "$GITHUB_OUTPUT"
-
       - name: Download APK
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -107,11 +121,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: ${{ steps.tag.outputs.name }}
+          tag_name: ${{ needs.plan.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          name: dragonspeedXL ${{ steps.tag.outputs.name }}
+          name: dragonspeedXL ${{ needs.plan.outputs.tag }}
           prerelease: true
-          files: apk/app-release.apk
-          body: |
-            Discord 鯖向けのリリース版（リリース鍵で署名した APK）。
-            初回に、モデルを Hugging Face（realryo1/dragonspeedxl-models、CC BY-NC-SA 4.0）から取得します（約 7.6GB）。
+          files: apk/dragonspeedXL_${{ needs.plan.outputs.tag }}.apk

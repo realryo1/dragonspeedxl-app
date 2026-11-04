@@ -13,8 +13,11 @@ android {
         applicationId = "com.dragonspeedxl.app"
         minSdk = 31
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        // 版の番号は CI（build-apk）が決めて -PdsxlRelease=<番号> で渡す（Release のタグ v<番号> と同じ）。
+        // 渡されないとき（手元のビルド）は、番号を付けず dev とする。
+        val dsxlRelease = providers.gradleProperty("dsxlRelease").orNull?.toIntOrNull()
+        versionCode = dsxlRelease ?: 1
+        versionName = dsxlRelease?.let { "v$it" } ?: "dev"
 
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild {

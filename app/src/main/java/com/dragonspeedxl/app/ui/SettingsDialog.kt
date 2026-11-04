@@ -18,6 +18,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,7 +38,7 @@ import com.dragonspeedxl.app.security.Biometrics
 
 private enum class Step { NONE, SET_PASSWORD, CHANGE_PASSWORD, DISABLE_PASSWORD }
 
-/** 設定。上から、セキュリティ、履歴（横×縦、除外）、起動時のプロンプト、Civitai、性能。 */
+/** 設定。上から、セキュリティ、履歴（横×縦、除外）、起動時のプロンプト、タグ補完、Civitai、性能。 */
 @Composable
 fun SettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
     val context = LocalContext.current
@@ -46,6 +47,7 @@ fun SettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
     var step by remember { mutableStateOf(Step.NONE) }
     var note by remember { mutableStateOf<String?>(null) }
     val taesdMissing = vm.missingTaesdFile()
+    LaunchedEffect(Unit) { vm.refreshTagDictionary() }
 
     // ウィンドウの高さはディスプレイの 80%。中身がはみ出すときはスクロールする
     val screenHeight = LocalConfiguration.current.screenHeightDp.dp
@@ -60,7 +62,6 @@ fun SettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("パスワードロック")
-                        Text("アプリを開くときにパスワードを求める", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Switch(checked = vm.hasPassword, onCheckedChange = { step = if (it) Step.SET_PASSWORD else Step.DISABLE_PASSWORD })
                 }
@@ -71,10 +72,6 @@ fun SettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("指紋認証ロック")
-                        Text(
-                            if (bioAvailable) "指紋で解除できるようにする" else "指紋が登録されていないため使えません（端末の設定で登録）",
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
                     }
                     Switch(
                         checked = vm.biometricOn,
@@ -96,10 +93,6 @@ fun SettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                 }
 
                 OutlinedButton(shape = AppShape, onClick = { onDismiss(); vm.lockNow() }, enabled = vm.hasPassword || vm.biometricOn, modifier = Modifier.fillMaxWidth()) { Text("今すぐロック") }
-                Text(
-                    "ロックは、アプリを閉じる／別のアプリに切り替えたあと、開き直したときにかかります。",
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
                 note?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
 
                 Text("履歴", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
@@ -107,7 +100,7 @@ fun SettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("除外")
-                        Text("以下の語句（プロンプト、ジョブ ID、seed など）を含む履歴を隠す", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("以下のプロンプトを隠す（カンマ区切り）", style =MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Switch(checked = vm.blurBlacklist, onCheckedChange = { vm.updateBlurBlacklist(it) })
                 }
@@ -149,6 +142,29 @@ fun SettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                 )
 
+                Text("タグ補完", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                OptionSwitch(
+                    title = "ローカル辞書モード",
+                    detail = "dskjalのDanbooruタグ一覧で補完します。\nオフでも、Danbooruにつながらないときは自動的にONになります。",
+                    checked = vm.localTagMode,
+                    onCheckedChange = { vm.updateLocalTagMode(it) },
+                    missingFile = null,
+                )
+                val dictError = vm.tagDictionaryError
+                Text(
+                    when {
+                        vm.tagDictionaryLoading -> "辞書: 取得中…"
+                        vm.tagDictionaryName != null -> "辞書: ${vm.tagDictionaryName}（取得済み）"
+                        dictError != null -> "辞書: 取得できませんでした（$dictError）"
+                        else -> "辞書: 未取得（初めて使うときに dskjal.com から約3MBを取得します）"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (dictError != null && !vm.tagDictionaryLoading) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (dictError != null && !vm.tagDictionaryLoading && vm.tagDictionaryName == null) {
+                    OutlinedButton(shape = AppShape, onClick = { vm.fetchTagDictionary() }, modifier = Modifier.fillMaxWidth()) { Text("辞書を取得し直す") }
+                }
+
                 Text("Civitai", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                 OutlinedTextField(
                     value = vm.civitaiToken,
@@ -174,7 +190,7 @@ fun SettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                 )
                 OptionSwitch(
                     title = "メモリ節約モード",
-                    detail = "UNetを今の向きの分だけ読み込み、メモリ(DMA-BUF)を約1.4GB減らします。縦横を切り替えるときに約2秒の読み直しが入ります。次の生成から反映されます。",
+                    detail = "UNetを指定された解像度の分だけ読み込み、メモリロードを約1.4GB削減します。",
                     checked = vm.memorySaver,
                     onCheckedChange = { vm.updateMemorySaver(it) },
                     missingFile = null,
@@ -196,7 +212,7 @@ fun SettingsDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                         steps = 17,
                     )
                     Text(
-                        "VAEデコードをNPUとGPUで分担するときと、生成中のプレビューで使うGPUの上限です（高速デコードの最終デコードには効きません）。描画が重くなる場合に下げてください。",
+                        "VAEデコードのNPU・GPU分業と生成中のプレビューにおけるGPU使用率の上限です。OSごとフレームドロップする場合に下げてください。",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Danbooru のタグ補完（プロンプトチップ）だけに使う。生成そのものは端末内で完結する -->
+    <!-- Danbooru のタグ補完（プロンプトチップ）だけに使う（繋がらないときに使う端末内の辞書は、初回に dskjal.com から取得する）。生成そのものは端末内で完結する -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 取得の進み具合を通知に出す（前景サービス。アプリを閉じても、取得が続く） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

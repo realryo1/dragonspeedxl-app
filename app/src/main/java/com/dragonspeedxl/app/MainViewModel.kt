@@ -34,6 +34,7 @@ import com.dragonspeedxl.app.lora.LoraConverter
 import com.dragonspeedxl.app.lora.LoraMixer
 import com.dragonspeedxl.app.lora.LoraUse
 import com.dragonspeedxl.app.prompt.DanbooruClient
+import com.dragonspeedxl.app.prompt.TagDictionary
 import com.dragonspeedxl.app.prompt.PromptChip
 import com.dragonspeedxl.app.prompt.PromptChips
 import com.dragonspeedxl.app.security.AppLock
@@ -124,7 +125,56 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var chipToast by mutableStateOf<String?>(null)
         private set
-    private val danbooru = DanbooruClient()
+    private val danbooru = DanbooruClient(TagDictionary(java.io.File(app.filesDir, "tag_dictionary")))
+    /** 端末内の辞書に切り替えたことを知らせ済み（Danbooru に繋がったら戻す）。 */
+    private var tagLocalNotified = false
+    /** 端末内の辞書の取得を、このプロセスで 1 回試した。 */
+    private var tagDictPrefetched = false
+
+    /** ローカル辞書モード: Danbooru に問い合わせず、端末内の辞書（dskjal のタグ一覧）だけで補完する。設定で切り替え、覚える（既定オフ）。 */
+    var localTagMode by mutableStateOf(prefs.getBoolean("localTagMode", false))
+        private set
+    /** 置いてある辞書のファイル名（例 "tags-2026-03-23.csv"。無ければ null）。設定に出す。 */
+    var tagDictionaryName by mutableStateOf<String?>(null)
+        private set
+    /** 辞書を取得中。 */
+    var tagDictionaryLoading by mutableStateOf(false)
+        private set
+    /** 最後に辞書の取得に失敗した理由（設定に出す。成功したら null）。 */
+    var tagDictionaryError by mutableStateOf<String?>(null)
+        private set
+
+    /** 設定を開いたときに、辞書の有無を見直す（通信しない）。 */
+    fun refreshTagDictionary() {
+        viewModelScope.launch { tagDictionaryName = withContext(Dispatchers.IO) { danbooru.localFile()?.name } }
+    }
+
+    fun updateLocalTagMode(on: Boolean) {
+        localTagMode = on
+        prefs.edit().putBoolean("localTagMode", on).apply()
+        hideSuggestions()
+        if (on) fetchTagDictionary()
+    }
+
+    /** 辞書が無ければ取る（あれば何もしない）。失敗は設定に出す。 */
+    fun fetchTagDictionary() {
+        if (tagDictionaryLoading) return
+        tagDictPrefetched = true
+        viewModelScope.launch {
+            tagDictionaryLoading = true
+            tagDictionaryError = null
+            try {
+                tagDictionaryName = danbooru.prefetchLocal().name
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w("dsxl-danbooru", "tag dictionary fetch failed: $e")
+                tagDictionaryError = "${e.javaClass.simpleName} ${e.message.orEmpty()}".trim()
+            } finally {
+                tagDictionaryLoading = false
+            }
+        }
+    }
     private var tagSearchJob: Job? = null
     private var toastJob: Job? = null
 
@@ -155,7 +205,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun hideSuggestions() { tagSearchJob?.cancel(); tagSuggestions = emptyList(); tagNoHit = false }
 
-    /** タグ入力欄の変更。カンマが入ったら確定、そうでなければ 180ms 後に Danbooru の補完を引く。 */
+    /** タグ入力欄の変更。カンマが入ったら確定、そうでなければ 180ms 後に Danbooru の補完を引く（繋がらなければ端末内の辞書）。 */
     fun onChipInputChange(text: String) {
         positiveChipInput = text
         tagSearchJob?.cancel()
@@ -163,13 +213,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val query = text.trim()
         if (text.contains(',')) { commitTyped(text); return }
         if (query.isEmpty()) { tagSuggestions = emptyList(); return }
+        if (!tagDictPrefetched) fetchTagDictionary()
         tagSearchJob = viewModelScope.launch {
             delay(180)
             try {
-                val tags = danbooru.autocomplete(query)
+                val r = danbooru.autocomplete(query, localOnly = localTagMode)
+                r.onlineError?.let { android.util.Log.w("dsxl-danbooru", "online failed, using local tags: $it") }
+                if (!r.local) tagLocalNotified = false
+                else if (r.onlineError != null && !tagLocalNotified) {
+                    tagLocalNotified = true
+                    showChipToast("Danbooru に繋がらないため、端末内の辞書で補完します")
+                }
                 if (positiveChipInput.trim() == query) {
-                    tagSuggestions = tags
-                    tagNoHit = tags.isEmpty()
+                    tagSuggestions = r.tags
+                    tagNoHit = r.tags.isEmpty()
                 }
             } catch (e: CancellationException) {
                 throw e
