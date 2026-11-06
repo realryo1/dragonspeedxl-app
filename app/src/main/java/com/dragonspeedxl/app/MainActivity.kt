@@ -13,13 +13,19 @@ import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import com.dragonspeedxl.app.ui.AppTheme
 import com.dragonspeedxl.app.ui.MainScreen
+import com.dragonspeedxl.app.engine.SocSupport
 import com.dragonspeedxl.app.ui.ModelSetupScreen
+import com.dragonspeedxl.app.ui.UnsupportedSocScreen
 
 class MainActivity : FragmentActivity() {   // BiometricPrompt のため FragmentActivity（ComponentActivity を継承しているので Compose はそのまま使える）
     private val vm: MainViewModel by viewModels()
@@ -33,9 +39,20 @@ class MainActivity : FragmentActivity() {   // BiometricPrompt のため Fragmen
         }
         // ロックが有効な間は、アプリスイッチャー（最近使ったアプリ）の縮小画像に中身を残さない
         lifecycleScope.launch { snapshotFlow { vm.hasPassword || vm.biometricOn }.collect { hideFromRecents(it) } }
+        val soc = SocSupport.detect(Build.SOC_MODEL)   // minSdk 31 なので使える
         setContent {
-            // 生成に使うモデルが足りない間（初回など）は、取り終えるまで本体の画面を出さない
-            AppTheme { if (vm.modelsNeedDownload) ModelSetupScreen(vm) else MainScreen(vm) }
+            // 「それでも続ける」は、その起動の間だけ有効（保存しない。アプリを起動し直すと、また案内を出す。画面の回転では消えない）
+            var socOverride by rememberSaveable { mutableStateOf(false) }
+            AppTheme {
+                when {
+                    // 対応していない SoC は、モデル（約 7.6GB）を取る前に知らせる
+                    soc.status != SocSupport.Status.SUPPORTED && !socOverride ->
+                        UnsupportedSocScreen(soc) { socOverride = true }
+                    // 生成に使うモデルが足りない間（初回など）は、取り終えるまで本体の画面を出さない
+                    vm.modelsNeedDownload -> ModelSetupScreen(vm)
+                    else -> MainScreen(vm)
+                }
+            }
         }
     }
 
@@ -125,6 +142,5 @@ class MainActivity : FragmentActivity() {   // BiometricPrompt のため Fragmen
         private const val REQUEST_TAKE_PHOTO = 0x5150   // 16 bit に収まる小さい値
         private const val REQUEST_PICK_FILE = 0x4c52   // 16 bit に収まる小さい値
         private const val REQUEST_CREATE_FILE = 0x4c53
-        private const val REQUEST_NOTIFY = 0x4e54
-    }
+        private const val REQUEST_NOTIFY = 0x4e54    }
 }
