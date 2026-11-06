@@ -3,6 +3,7 @@
 SDXL（LCM、Base 2 step ＋ Hires 4 step）を、Android 端末の NPU（Hexagon HTP v81）と GPU（Adreno）だけで動かすアプリです。生成は端末の中で完結し、オフラインで動きます。Kotlin / Jetpack Compose（Material 3、壁紙の動的カラー）と、C++ の QNN エンジン（JNI）でできています。
 
 - 対応端末: Snapdragon 8 Elite Gen 5（SM8850、HTP v81）。arm64-v8a のみ。minSdk 31 / targetSdk 34。
+  - 起動時に SoC を判定し、SM8850 以外では、モデルを取る前に「この端末には対応していません」の画面を出します（v6 から）。「それでも続ける」はその起動の間だけ有効で、起動し直すとまた出ます。
 - モデル: [Hugging Face の `realryo1/dragonspeedxl-models`](https://huggingface.co/realryo1/dragonspeedxl-models)（public、CC BY-NC-SA 4.0。配布条件は同じページに書いてあります）。
 - 変換の再現に使う道具は [`realryo1/dragonspeedxl-convert`](https://huggingface.co/realryo1/dragonspeedxl-convert) にあります。
 
@@ -45,7 +46,7 @@ QNN（Qualcomm AI Runtime）の SDK 由来のものは、このリポジトリ�
 
 開発に使ったバージョンは次のとおりです。
 
-- NDK 30.0.16248370、CMake 4.1.2、Gradle 8.9（wrapper）、AGP 8.5.2、JDK 21。
+- NDK 30.0.16248370、CMake 4.1.2、Gradle 8.9（wrapper）、AGP 8.5.2、JDK 17（Java 17 でビルドします）。
 
 ```
 ./gradlew assembleDebug           # Windows は gradlew.bat
@@ -60,7 +61,7 @@ QNN（Qualcomm AI Runtime）の SDK 由来のものは、このリポジトリ�
 `Actions` の「build-apk」を手動で実行します（`workflow_dispatch`）。
 
 - QNN のヘッダーと `.so` は、非公開の補助リポジトリ `realryo1/dragonspeedxl-qnn-deps` から取ります。読むには、secret `DEPS_TOKEN`（そのリポジトリだけを読める fine-grained PAT）が要ります。
-- `tag` を入れると、リリース鍵で署名した APK（`app-release.apk`）を GitHub Release に上げます。空なら artifact だけ。
+- 入力はありません。実行すると、次の番号（既存の `v<番号>` タグの最大に 1 を足したもの）で、リリース鍵で署名した APK（`app-release.apk`）を作り、GitHub Release（Pre-release）に上げます。ビルドが失敗したときは、番号は使われません。
 - 署名の鍵は secrets（`KEYSTORE_BASE64`、`KEYSTORE_PASSWORD`、`KEY_ALIAS`、`KEY_PASSWORD`）から復元します。鍵そのものはリポジトリには入れません。
 - 手元で同じ署名のビルドをするときは、環境変数 `DSXL_KEYSTORE`（鍵ファイルのパス）、`DSXL_KEYSTORE_PASSWORD`、`DSXL_KEY_ALIAS`、`DSXL_KEY_PASSWORD` を設定して `./gradlew :app:assembleRelease` を実行します。
 
